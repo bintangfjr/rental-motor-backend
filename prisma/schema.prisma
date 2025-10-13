@@ -1,0 +1,152 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Admin {
+  id             Int       @id @default(autoincrement())
+  nama_lengkap   String    @db.VarChar(255)
+  username       String    @unique @db.VarChar(255)
+  email          String    @unique @db.VarChar(255)
+  password       String    @db.VarChar(255)
+  is_super_admin Boolean   @default(false)
+  deleted_at     DateTime?
+  
+  // ✅ FIXED: Gunakan now() bukan dbgenerated
+  created_at     DateTime  @default(now()) @map("created_at")
+  updated_at     DateTime  @updatedAt @map("updated_at")
+  
+  sewas          Sewa[]
+
+  @@map("admins")
+}
+
+model Motor {
+  id          Int       @id @default(autoincrement())
+  plat_nomor  String    @unique @db.VarChar(20)
+  merk        String    @db.VarChar(255)
+  model       String    @db.VarChar(255)
+  tahun       Int
+  harga       Int
+  no_gsm      String?   @db.VarChar(20)
+  imei        String?   @db.VarChar(20)
+  status      String    @db.VarChar(20)
+  device_id   String?   @db.VarChar(255)
+  lat         Float?
+  lng         Float?
+  last_update DateTime?
+  
+  // ✅ FIXED: Gunakan now() bukan dbgenerated
+  created_at  DateTime  @default(now()) @map("created_at")
+  updated_at  DateTime  @updatedAt @map("updated_at")
+  
+  sewas       Sewa[]
+
+  @@map("motors")
+}
+
+model Penyewa {
+  id             Int      @id @default(autoincrement())
+  nama           String   @db.VarChar(255)
+  alamat         String?  @db.Text
+  foto_ktp       String?  @db.VarChar(255)
+  is_blacklisted Boolean  @default(false)
+  no_whatsapp    String   @unique @db.VarChar(20)
+  
+  // ✅ FIXED: Gunakan now() bukan dbgenerated
+  created_at     DateTime @default(now()) @map("created_at")
+  updated_at     DateTime @updatedAt @map("updated_at")
+  
+  sewas          Sewa[]
+
+  @@map("penyewas")
+}
+
+model Sewa {
+  id                Int       @id @default(autoincrement())
+  motor_id          Int
+  penyewa_id        Int
+  admin_id          Int
+  status            String    @db.VarChar(20)
+  jaminan           String?   @db.VarChar(255)
+  pembayaran        String?   @db.VarChar(50)
+  durasi_sewa       Int
+  tgl_kembali       DateTime
+  tgl_sewa          DateTime
+  total_harga       Int
+  status_notifikasi String?   @db.VarChar(20)
+  satuan_durasi     String    @db.VarChar(20) @default("hari")
+  additional_costs Json?
+  catatan_tambahan  String?   @db.Text
+  
+  
+  // ✅ FIXED: Gunakan now() bukan dbgenerated
+  created_at        DateTime  @default(now()) @map("created_at")
+  updated_at        DateTime  @updatedAt @map("updated_at")
+  
+  histories         History[]
+  
+  admin             Admin     @relation(fields: [admin_id], references: [id], onDelete: Cascade, map: "fk_sewa_admin")
+  motor             Motor     @relation(fields: [motor_id], references: [id], onDelete: Cascade, map: "fk_sewa_motor")
+  penyewa           Penyewa   @relation(fields: [penyewa_id], references: [id], onDelete: Cascade, map: "fk_sewa_penyewa")
+
+  @@index([admin_id], map: "fk_sewa_admin")
+  @@index([motor_id], map: "fk_sewa_motor")
+  @@index([penyewa_id], map: "fk_sewa_penyewa")
+  @@map("sewas")
+}
+
+model History {
+  id                   Int      @id @default(autoincrement())
+  sewa_id              Int
+  tgl_selesai          DateTime
+  status_selesai       String   @db.VarChar(20)
+  harga                Int
+  denda                Int
+  catatan              String?  @db.VarChar(500)
+  keterlambatan_menit  Int?     @default(0)
+  
+  // ✅ FIXED: Gunakan now() bukan dbgenerated
+  created_at           DateTime @default(now()) @map("created_at")
+  updated_at           DateTime @updatedAt @map("updated_at")
+  
+  sewa                 Sewa     @relation(fields: [sewa_id], references: [id], onDelete: Cascade, map: "fk_history_sewa")
+
+  @@index([sewa_id], map: "fk_history_sewa")
+  @@map("histories")
+}
+
+model WhatsAppNotification {
+  id         Int      @id @default(autoincrement())
+  target     String   @db.VarChar(20)
+  message    String   @db.Text
+  type       String   @db.VarChar(20)
+  status     String   @db.VarChar(20)
+  response   String?  @db.Text
+  
+  // ✅ FIXED: Gunakan now() bukan dbgenerated
+  created_at DateTime @default(now()) @map("created_at")
+  updated_at DateTime @updatedAt @map("updated_at")
+
+  @@map("whatsapp_notifications")
+}
+
+model Settings {
+  id           Int      @id @default(autoincrement())
+  key          String   @unique @db.VarChar(255)
+  value        String   @db.Text
+  type         String   @db.VarChar(50)
+  group        String   @db.VarChar(50)
+  description  String?  @db.VarChar(500)
+  is_encrypted Boolean  @default(false)
+  
+  // ✅ FIXED: Gunakan now() bukan dbgenerated
+  created_at   DateTime @default(now()) @map("created_at")
+  updated_at   DateTime @updatedAt @map("updated_at")
+
+  @@map("settings")
+}
