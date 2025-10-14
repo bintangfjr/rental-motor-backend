@@ -284,74 +284,65 @@ export class SewaService {
         ? createSewaDto.jaminan.join(', ')
         : createSewaDto.jaminan;
 
-      // Definisikan tipe data yang aman untuk Prisma
-      interface SewaCreateData {
-        motor_id: number;
-        penyewa_id: number;
-        admin_id: number;
-        status: string;
-        jaminan?: string;
-        pembayaran?: string;
-        durasi_sewa: number;
-        tgl_sewa: string; // ✅ Changed from Date to string
-        tgl_kembali: string; // ✅ Changed from Date to string
-        total_harga: number;
-        satuan_durasi: string;
-        status_notifikasi: string;
-        additional_costs?: any;
-        catatan_tambahan?: string;
-      }
+      // ✅ SOLUSI FINAL: Gunakan RAW SQL untuk bypass Prisma timezone conversion
+      console.log('🚀 Using RAW SQL to insert data...');
 
-      const data: SewaCreateData = {
-        motor_id: createSewaDto.motor_id,
-        penyewa_id: createSewaDto.penyewa_id,
-        admin_id: adminId,
-        status: this.STATUS.AKTIF,
-        jaminan: jaminanString,
-        pembayaran: createSewaDto.pembayaran,
-        durasi_sewa: durasi,
-        tgl_sewa: tglSewaDB, // ✅ SQL datetime string
-        tgl_kembali: tglKembaliDB, // ✅ SQL datetime string
-        total_harga: finalTotalHarga,
-        satuan_durasi: createSewaDto.satuan_durasi,
-        status_notifikasi: 'menunggu',
-      };
+      // Prepare additional_costs as JSON string
+      const additionalCostsJson =
+        additionalCosts.length > 0 ? JSON.stringify(additionalCosts) : null;
 
-      // Tambahkan additional_costs jika ada
-      if (additionalCosts.length > 0) {
-        data.additional_costs = additionalCosts;
-      }
+      // Insert menggunakan RAW SQL
+      const result = await prisma.$executeRaw`
+        INSERT INTO sewas (
+          motor_id, penyewa_id, admin_id, status, jaminan, pembayaran,
+          durasi_sewa, tgl_sewa, tgl_kembali, total_harga, satuan_durasi, status_notifikasi,
+          additional_costs, catatan_tambahan, created_at, updated_at
+        ) VALUES (
+          ${createSewaDto.motor_id}, 
+          ${createSewaDto.penyewa_id}, 
+          ${adminId}, 
+          'aktif',
+          ${jaminanString}, 
+          ${createSewaDto.pembayaran}, 
+          ${durasi},
+          ${tglSewaDB}, 
+          ${tglKembaliDB}, 
+          ${finalTotalHarga}, 
+          ${createSewaDto.satuan_durasi}, 
+          'menunggu',
+          ${additionalCostsJson},
+          ${createSewaDto.catatan_tambahan || null},
+          NOW(), 
+          NOW()
+        )
+      `;
 
-      // Tambahkan catatan tambahan jika ada
-      if (createSewaDto.catatan_tambahan) {
-        data.catatan_tambahan = createSewaDto.catatan_tambahan;
-      }
+      console.log('✅ RAW SQL insert result:', result);
 
-      console.log('📦 Data to be inserted:', {
-        tgl_sewa: data.tgl_sewa,
-        tgl_kembali: data.tgl_kembali,
-        type_tgl_sewa: typeof data.tgl_sewa,
-        type_tgl_kembali: typeof data.tgl_kembali,
-      });
-
-      const sewa = await prisma.sewa.create({
-        data: data,
+      // Get the inserted sewa
+      const insertedSewa = await prisma.sewa.findFirst({
+        where: {
+          motor_id: createSewaDto.motor_id,
+          penyewa_id: createSewaDto.penyewa_id,
+          admin_id: adminId,
+          status: 'aktif',
+        },
+        orderBy: { id: 'desc' },
         include: {
           motor: true,
           penyewa: true,
-          admin: {
-            select: {
-              id: true,
-              nama_lengkap: true,
-            },
-          },
+          admin: { select: { id: true, nama_lengkap: true } },
         },
       });
 
+      if (!insertedSewa) {
+        throw new BadRequestException('Gagal membuat sewa');
+      }
+
       console.log('✅ Sewa created with dates:', {
-        id: sewa.id,
-        tgl_sewa: sewa.tgl_sewa,
-        tgl_kembali: sewa.tgl_kembali,
+        id: insertedSewa.id,
+        tgl_sewa: insertedSewa.tgl_sewa,
+        tgl_kembali: insertedSewa.tgl_kembali,
       });
 
       // Update motor status to 'disewa'
@@ -370,7 +361,7 @@ export class SewaService {
         additionalCosts,
       });
 
-      return sewa;
+      return insertedSewa;
     });
   }
 
@@ -391,18 +382,15 @@ export class SewaService {
         );
       }
 
-      const updateData: any = {};
+      // Build update fields dan values
+      const updateFields = [];
+      const updateValues = [];
 
       // Handle tgl_kembali update
       if (updateSewaDto.tgl_kembali) {
         const tglKembaliDB = this.parseDateTimeForDB(updateSewaDto.tgl_kembali);
-        updateData.tgl_kembali = tglKembaliDB;
-
-        // Debug logging untuk update
-        console.log('=== 🕐 UPDATE DATE PARSING DEBUG ===');
-        console.log('Input - tgl_kembali:', updateSewaDto.tgl_kembali);
-        console.log('For DB - tgl_kembali:', tglKembaliDB);
-        console.log('================================');
+        updateFields.push('tgl_kembali = ?');
+        updateValues.push(tglKembaliDB);
 
         // Untuk perhitungan duration, gunakan moment objects
         const tglSewaMoment = moment(sewa.tgl_sewa);
@@ -443,65 +431,77 @@ export class SewaService {
           }
         }
 
-        updateData.durasi_sewa = durasi;
-        updateData.total_harga = baseHarga;
+        updateFields.push('durasi_sewa = ?');
+        updateValues.push(durasi);
+        updateFields.push('total_harga = ?');
+        updateValues.push(baseHarga);
       }
 
-      // Hitung biaya tambahan dengan type
-      const additionalCosts =
-        (updateSewaDto.additional_costs as AdditionalCostItem[]) || [];
-      const { totalDiscount, totalAdditional, netAdditionalCosts } =
-        this.calculateAdditionalCostsTotals(additionalCosts);
-
-      // Update total harga jika ada additional costs
+      // Handle additional_costs update
       if (updateSewaDto.additional_costs !== undefined) {
-        updateData.additional_costs = additionalCosts;
+        const additionalCosts =
+          (updateSewaDto.additional_costs as AdditionalCostItem[]) || [];
+        const { netAdditionalCosts } =
+          this.calculateAdditionalCostsTotals(additionalCosts);
 
-        const baseHarga = updateData.total_harga || sewa.total_harga;
+        const baseHarga = updateSewaDto.tgl_kembali
+          ? updateValues[updateValues.length - 1] // ambil dari calculation di atas
+          : sewa.total_harga;
+
         const finalTotalHarga = Math.max(0, baseHarga + netAdditionalCosts);
-        updateData.total_harga = finalTotalHarga;
+
+        updateFields.push('additional_costs = ?');
+        updateValues.push(JSON.stringify(additionalCosts));
+        updateFields.push('total_harga = ?');
+        updateValues.push(finalTotalHarga);
       }
 
       if (updateSewaDto.jaminan !== undefined) {
-        updateData.jaminan = Array.isArray(updateSewaDto.jaminan)
+        const jaminanString = Array.isArray(updateSewaDto.jaminan)
           ? updateSewaDto.jaminan.join(', ')
           : updateSewaDto.jaminan;
+        updateFields.push('jaminan = ?');
+        updateValues.push(jaminanString);
       }
 
       if (updateSewaDto.pembayaran !== undefined) {
-        updateData.pembayaran = updateSewaDto.pembayaran;
+        updateFields.push('pembayaran = ?');
+        updateValues.push(updateSewaDto.pembayaran);
       }
 
       // Handle catatan tambahan
       if (updateSewaDto.catatan_tambahan !== undefined) {
-        updateData.catatan_tambahan = updateSewaDto.catatan_tambahan;
+        updateFields.push('catatan_tambahan = ?');
+        updateValues.push(updateSewaDto.catatan_tambahan);
       }
 
       // Jika tidak ada data yang diupdate, throw error
-      if (Object.keys(updateData).length === 0) {
+      if (updateFields.length === 0) {
         throw new BadRequestException('Tidak ada data yang diupdate');
       }
 
-      // Debug log untuk melihat data yang akan diupdate
-      console.log('Data update sewa:', {
-        id,
-        updateData,
-      });
+      // ✅ Gunakan RAW SQL untuk update
+      updateFields.push('updated_at = NOW()');
+      updateValues.push(id);
 
-      return prisma.sewa.update({
+      const sql = `UPDATE sewas SET ${updateFields.join(', ')} WHERE id = ?`;
+
+      console.log('🚀 RAW SQL Update:', sql);
+      console.log('📦 Values:', updateValues);
+
+      await prisma.$executeRawUnsafe(sql, ...updateValues);
+
+      // Get updated sewa
+      const updatedSewa = await prisma.sewa.findUnique({
         where: { id },
-        data: updateData,
         include: {
           motor: true,
           penyewa: true,
-          admin: {
-            select: {
-              id: true,
-              nama_lengkap: true,
-            },
-          },
+          admin: { select: { id: true, nama_lengkap: true } },
         },
       });
+
+      return updatedSewa;
     });
   }
 
@@ -561,32 +561,40 @@ export class SewaService {
         }
       }
 
-      // Create history record
-      const history = await prisma.history.create({
-        data: {
-          sewa_id: id,
-          tgl_selesai: tglSelesaiDB, // ✅ SQL datetime string
-          status_selesai: statusSelesai,
-          harga: sewa.total_harga,
-          denda: denda,
-          catatan: selesaiSewaDto.catatan,
-          keterlambatan_menit: keterlambatanMenit,
-        },
-      });
+      // Create history record menggunakan RAW SQL
+      await prisma.$executeRaw`
+        INSERT INTO histories (
+          sewa_id, tgl_selesai, status_selesai, harga, denda, catatan, keterlambatan_menit, created_at, updated_at
+        ) VALUES (
+          ${id}, 
+          ${tglSelesaiDB}, 
+          ${statusSelesai}, 
+          ${sewa.total_harga}, 
+          ${denda}, 
+          ${selesaiSewaDto.catatan || null}, 
+          ${keterlambatanMenit},
+          NOW(), 
+          NOW()
+        )
+      `;
 
-      // Update sewa status to completed
-      await prisma.sewa.update({
-        where: { id },
-        data: {
-          status: this.STATUS.SELESAI,
-          status_notifikasi: 'selesai',
-        },
-      });
+      // Update sewa status to completed menggunakan RAW SQL
+      await prisma.$executeRaw`
+        UPDATE sewas 
+        SET status = 'selesai', status_notifikasi = 'selesai', updated_at = NOW()
+        WHERE id = ${id}
+      `;
 
       // Update motor status back to available
       await prisma.motor.update({
         where: { id: sewa.motor_id },
         data: { status: 'tersedia' },
+      });
+
+      // Get the created history
+      const history = await prisma.history.findFirst({
+        where: { sewa_id: id },
+        orderBy: { id: 'desc' },
       });
 
       return history;
@@ -639,12 +647,16 @@ export class SewaService {
       throw new NotFoundException('Sewa tidak ditemukan');
     }
 
-    // Update catatan tambahan
-    return this.prisma.sewa.update({
+    // Update catatan tambahan menggunakan RAW SQL
+    await this.prisma.$executeRaw`
+      UPDATE sewas 
+      SET catatan_tambahan = ${catatan_tambahan}, updated_at = NOW()
+      WHERE id = ${id}
+    `;
+
+    // Get updated sewa
+    return this.prisma.sewa.findUnique({
       where: { id },
-      data: {
-        catatan_tambahan: catatan_tambahan,
-      },
       include: {
         motor: {
           select: {
