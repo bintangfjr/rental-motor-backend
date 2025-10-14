@@ -58,6 +58,7 @@ export class SewaService {
         dbFormat: result,
         moment: dateMoment.format(),
         iso: dateMoment.toISOString(),
+        timezone: 'Asia/Jakarta',
       });
 
       return result;
@@ -168,6 +169,11 @@ export class SewaService {
 
   async create(createSewaDto: CreateSewaDto, adminId: number) {
     return this.prisma.$transaction(async (prisma) => {
+      // ✅ DEBUG: Cek timezone database session
+      const dbTimezone =
+        await prisma.$queryRaw`SELECT @@session.time_zone as timezone`;
+      console.log('🗄️ Database session timezone:', dbTimezone);
+
       // Check if motor exists and is available
       const motor = await prisma.motor.findUnique({
         where: { id: createSewaDto.motor_id },
@@ -321,6 +327,13 @@ export class SewaService {
         data.catatan_tambahan = createSewaDto.catatan_tambahan;
       }
 
+      console.log('📦 Data to be inserted:', {
+        tgl_sewa: data.tgl_sewa,
+        tgl_kembali: data.tgl_kembali,
+        type_tgl_sewa: typeof data.tgl_sewa,
+        type_tgl_kembali: typeof data.tgl_kembali,
+      });
+
       const sewa = await prisma.sewa.create({
         data: data,
         include: {
@@ -333,6 +346,12 @@ export class SewaService {
             },
           },
         },
+      });
+
+      console.log('✅ Sewa created with dates:', {
+        id: sewa.id,
+        tgl_sewa: sewa.tgl_sewa,
+        tgl_kembali: sewa.tgl_kembali,
       });
 
       // Update motor status to 'disewa'

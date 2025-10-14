@@ -14,6 +14,9 @@ export class PrismaService
 
   async onModuleInit() {
     await this.$connect();
+    // ✅ SET TIMEZONE untuk semua session Prisma
+    await this.$executeRaw`SET time_zone = '+07:00'`;
+    console.log('✅ Database timezone set to +07:00 (WIB)');
   }
 
   async onModuleDestroy() {
