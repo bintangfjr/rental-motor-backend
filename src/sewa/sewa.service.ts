@@ -7,7 +7,7 @@ import { PrismaService } from '../prisma.service';
 import { CreateSewaDto } from './dto/create-sewa.dto';
 import { UpdateSewaDto } from './dto/update-sewa.dto';
 import { SelesaiSewaDto } from './dto/selesai-sewa.dto';
-import * as moment from 'moment';
+import * as moment from 'moment-timezone';
 
 // Interface untuk additional costs dengan type
 interface AdditionalCostItem {
@@ -30,6 +30,42 @@ export class SewaService {
     TEPAT_WAKTU: 'Tepat Waktu',
     TERLAMBAT: 'Terlambat',
   };
+
+  // ✅ METHOD BARU: Parse datetime ke format SQL datetime string
+  private parseDateTimeForDB(dateString: string): string {
+    if (!dateString)
+      return moment().tz('Asia/Jakarta').format('YYYY-MM-DD HH:mm:ss');
+
+    console.log('🔧 Parsing date for DB:', dateString);
+
+    try {
+      let dateMoment: moment.Moment;
+
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+        // Format: '2025-10-15' (date only)
+        dateMoment = moment.tz(dateString, 'Asia/Jakarta').startOf('day');
+      } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(dateString)) {
+        // Format: '2025-10-15T14:30' (datetime without timezone)
+        dateMoment = moment.tz(dateString, 'Asia/Jakarta');
+      } else {
+        dateMoment = moment(dateString).tz('Asia/Jakarta');
+      }
+
+      const result = dateMoment.format('YYYY-MM-DD HH:mm:ss');
+
+      console.log('✅ Date for DB:', {
+        input: dateString,
+        dbFormat: result,
+        moment: dateMoment.format(),
+        iso: dateMoment.toISOString(),
+      });
+
+      return result;
+    } catch (error) {
+      console.error('❌ Error parsing date for DB:', error);
+      return moment().tz('Asia/Jakarta').format('YYYY-MM-DD HH:mm:ss');
+    }
+  }
 
   // Helper function untuk menghitung total dari additional costs
   private calculateAdditionalCostsTotals(
@@ -169,12 +205,27 @@ export class SewaService {
         throw new BadRequestException('Penyewa memiliki sewa aktif');
       }
 
-      // Parse dates
-      const tglSewa = new Date(createSewaDto.tgl_sewa);
-      const tglKembali = new Date(createSewaDto.tgl_kembali);
+      // ✅ PERBAIKAN: Parse dates sebagai string SQL datetime
+      console.log('=== 🕐 DATE PARSING FOR DB ===');
+      console.log('Input - tgl_sewa:', createSewaDto.tgl_sewa);
+      console.log('Input - tgl_kembali:', createSewaDto.tgl_kembali);
+
+      const tglSewaDB = this.parseDateTimeForDB(createSewaDto.tgl_sewa);
+      const tglKembaliDB = this.parseDateTimeForDB(createSewaDto.tgl_kembali);
+
+      console.log('For DB - tgl_sewa:', tglSewaDB);
+      console.log('For DB - tgl_kembali:', tglKembaliDB);
+      console.log('============================');
+
+      // Untuk perhitungan duration, gunakan moment objects
+      const tglSewaMoment = moment.tz(createSewaDto.tgl_sewa, 'Asia/Jakarta');
+      const tglKembaliMoment = moment.tz(
+        createSewaDto.tgl_kembali,
+        'Asia/Jakarta',
+      );
 
       // Validate dates
-      if (tglSewa >= tglKembali) {
+      if (tglSewaMoment.isSameOrAfter(tglKembaliMoment)) {
         throw new BadRequestException(
           'Tanggal kembali harus setelah tanggal sewa',
         );
@@ -186,17 +237,11 @@ export class SewaService {
 
       if (createSewaDto.satuan_durasi === 'jam') {
         // Untuk satuan jam, hitung per jam dengan pembulatan ke atas
-        durasi = Math.ceil(
-          moment(tglKembali).diff(moment(tglSewa), 'hours', true),
-        );
+        durasi = Math.ceil(tglKembaliMoment.diff(tglSewaMoment, 'hours', true));
         baseHarga = Math.ceil((motor.harga / 24) * durasi);
       } else {
         // Untuk satuan hari, 1 hari = 24 jam
-        const diffInHours = moment(tglKembali).diff(
-          moment(tglSewa),
-          'hours',
-          true,
-        );
+        const diffInHours = tglKembaliMoment.diff(tglSewaMoment, 'hours', true);
 
         // Minimal 1 hari
         if (diffInHours <= 24) {
@@ -242,8 +287,8 @@ export class SewaService {
         jaminan?: string;
         pembayaran?: string;
         durasi_sewa: number;
-        tgl_sewa: Date;
-        tgl_kembali: Date;
+        tgl_sewa: string; // ✅ Changed from Date to string
+        tgl_kembali: string; // ✅ Changed from Date to string
         total_harga: number;
         satuan_durasi: string;
         status_notifikasi: string;
@@ -259,8 +304,8 @@ export class SewaService {
         jaminan: jaminanString,
         pembayaran: createSewaDto.pembayaran,
         durasi_sewa: durasi,
-        tgl_sewa: tglSewa,
-        tgl_kembali: tglKembali,
+        tgl_sewa: tglSewaDB, // ✅ SQL datetime string
+        tgl_kembali: tglKembaliDB, // ✅ SQL datetime string
         total_harga: finalTotalHarga,
         satuan_durasi: createSewaDto.satuan_durasi,
         status_notifikasi: 'menunggu',
@@ -327,33 +372,45 @@ export class SewaService {
         );
       }
 
-      // Handle tgl_kembali yang optional di update
-      const tglSewa = new Date(sewa.tgl_sewa);
-      const tglKembali = updateSewaDto.tgl_kembali
-        ? new Date(updateSewaDto.tgl_kembali)
-        : new Date(sewa.tgl_kembali);
+      const updateData: any = {};
 
-      // Validate new return date only if provided
-      if (updateSewaDto.tgl_kembali && tglSewa >= tglKembali) {
-        throw new BadRequestException(
-          'Tanggal kembali harus setelah tanggal sewa',
-        );
-      }
-
-      // Calculate new duration and price only if dates changed
-      let durasi = sewa.durasi_sewa;
-      let baseHarga = sewa.total_harga;
-
+      // Handle tgl_kembali update
       if (updateSewaDto.tgl_kembali) {
+        const tglKembaliDB = this.parseDateTimeForDB(updateSewaDto.tgl_kembali);
+        updateData.tgl_kembali = tglKembaliDB;
+
+        // Debug logging untuk update
+        console.log('=== 🕐 UPDATE DATE PARSING DEBUG ===');
+        console.log('Input - tgl_kembali:', updateSewaDto.tgl_kembali);
+        console.log('For DB - tgl_kembali:', tglKembaliDB);
+        console.log('================================');
+
+        // Untuk perhitungan duration, gunakan moment objects
+        const tglSewaMoment = moment(sewa.tgl_sewa);
+        const tglKembaliMoment = moment.tz(
+          updateSewaDto.tgl_kembali,
+          'Asia/Jakarta',
+        );
+
+        // Validate new return date
+        if (tglSewaMoment.isSameOrAfter(tglKembaliMoment)) {
+          throw new BadRequestException(
+            'Tanggal kembali harus setelah tanggal sewa',
+          );
+        }
+
+        // Calculate new duration and price
+        let durasi = sewa.durasi_sewa;
+        let baseHarga = sewa.total_harga;
+
         if (sewa.satuan_durasi === 'jam') {
           durasi = Math.ceil(
-            moment(tglKembali).diff(moment(tglSewa), 'hours', true),
+            tglKembaliMoment.diff(tglSewaMoment, 'hours', true),
           );
           baseHarga = Math.ceil((sewa.motor.harga / 24) * durasi);
         } else {
-          // Untuk satuan hari, 1 hari = 24 jam
-          const diffInHours = moment(tglKembali).diff(
-            moment(tglSewa),
+          const diffInHours = tglKembaliMoment.diff(
+            tglSewaMoment,
             'hours',
             true,
           );
@@ -366,6 +423,9 @@ export class SewaService {
             baseHarga = sewa.motor.harga * durasi;
           }
         }
+
+        updateData.durasi_sewa = durasi;
+        updateData.total_harga = baseHarga;
       }
 
       // Hitung biaya tambahan dengan type
@@ -374,26 +434,12 @@ export class SewaService {
       const { totalDiscount, totalAdditional, netAdditionalCosts } =
         this.calculateAdditionalCostsTotals(additionalCosts);
 
-      // Total harga = base harga + biaya tambahan - potongan
-      const finalTotalHarga = Math.max(0, baseHarga + netAdditionalCosts);
+      // Update total harga jika ada additional costs
+      if (updateSewaDto.additional_costs !== undefined) {
+        updateData.additional_costs = additionalCosts;
 
-      // Definisikan tipe data yang aman untuk update
-      interface SewaUpdateData {
-        durasi_sewa?: number;
-        total_harga?: number;
-        tgl_kembali?: Date;
-        jaminan?: string;
-        pembayaran?: string;
-        additional_costs?: any;
-        catatan_tambahan?: string;
-      }
-
-      const updateData: SewaUpdateData = {};
-
-      // Only include fields that are provided
-      if (updateSewaDto.tgl_kembali) {
-        updateData.tgl_kembali = tglKembali;
-        updateData.durasi_sewa = durasi;
+        const baseHarga = updateData.total_harga || sewa.total_harga;
+        const finalTotalHarga = Math.max(0, baseHarga + netAdditionalCosts);
         updateData.total_harga = finalTotalHarga;
       }
 
@@ -405,16 +451,6 @@ export class SewaService {
 
       if (updateSewaDto.pembayaran !== undefined) {
         updateData.pembayaran = updateSewaDto.pembayaran;
-      }
-
-      // Handle additional_costs
-      if (updateSewaDto.additional_costs !== undefined) {
-        updateData.additional_costs = additionalCosts;
-
-        // Update total_harga jika ada perubahan additional_costs
-        if (!updateSewaDto.tgl_kembali) {
-          updateData.total_harga = finalTotalHarga;
-        }
       }
 
       // Handle catatan tambahan
@@ -430,12 +466,6 @@ export class SewaService {
       // Debug log untuk melihat data yang akan diupdate
       console.log('Data update sewa:', {
         id,
-        baseHarga,
-        totalDiscount,
-        totalAdditional,
-        netAdditionalCosts,
-        finalTotalHarga,
-        additionalCosts,
         updateData,
       });
 
@@ -471,32 +501,38 @@ export class SewaService {
         throw new BadRequestException('Sewa sudah selesai');
       }
 
-      const tglKembaliJadwal = new Date(sewa.tgl_kembali);
-      const tglSelesaiAktual = new Date(selesaiSewaDto.tgl_selesai);
+      // ✅ PERBAIKAN: Parse tgl_selesai sebagai string SQL datetime
+      const tglSelesaiDB = this.parseDateTimeForDB(selesaiSewaDto.tgl_selesai);
+      const tglKembaliJadwal = moment(sewa.tgl_kembali);
+      const tglSelesaiMoment = moment.tz(
+        selesaiSewaDto.tgl_selesai,
+        'Asia/Jakarta',
+      );
+
+      console.log('=== 🕐 SELESAI DATE DEBUG ===');
+      console.log('tgl_kembali_jadwal:', sewa.tgl_kembali);
+      console.log('tgl_selesai_aktual:', tglSelesaiDB);
+      console.log('==========================');
 
       let denda = 0;
       let statusSelesai = this.STATUS_SELESAI.TEPAT_WAKTU;
       let keterlambatanMenit = 0;
 
       // Calculate penalty if late
-      if (tglSelesaiAktual > tglKembaliJadwal) {
+      if (tglSelesaiMoment > tglKembaliJadwal) {
         statusSelesai = this.STATUS_SELESAI.TERLAMBAT;
 
         if (sewa.satuan_durasi === 'jam') {
           // Calculate delay in minutes for hourly rentals
           keterlambatanMenit = Math.ceil(
-            moment(tglSelesaiAktual).diff(
-              moment(tglKembaliJadwal),
-              'minutes',
-              true,
-            ),
+            tglSelesaiMoment.diff(tglKembaliJadwal, 'minutes', true),
           );
           const hargaPerJam = Math.ceil(sewa.motor.harga / 24);
           denda = Math.ceil((keterlambatanMenit / 60) * hargaPerJam * 0.5);
         } else {
           // Calculate delay in hours for daily rentals
-          const jamTerlambat = moment(tglSelesaiAktual).diff(
-            moment(tglKembaliJadwal),
+          const jamTerlambat = tglSelesaiMoment.diff(
+            tglKembaliJadwal,
             'hours',
             true,
           );
@@ -510,7 +546,7 @@ export class SewaService {
       const history = await prisma.history.create({
         data: {
           sewa_id: id,
-          tgl_selesai: tglSelesaiAktual,
+          tgl_selesai: tglSelesaiDB, // ✅ SQL datetime string
           status_selesai: statusSelesai,
           harga: sewa.total_harga,
           denda: denda,
