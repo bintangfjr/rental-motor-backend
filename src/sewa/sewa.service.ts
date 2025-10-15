@@ -32,7 +32,7 @@ export class SewaService {
     TERLAMBAT: 'Terlambat',
   };
 
-  // ✅ METHOD: Parse semua format date ke Date object dengan WIB timezone
+  // ✅ METHOD: Parse semua format date ke Date object dengan WIB timezone (FIXED)
   private parseDateInput(dateString: string, fieldName: string): Date {
     if (!dateString) {
       throw new BadRequestException(`${fieldName} tidak boleh kosong`);
@@ -58,7 +58,11 @@ export class SewaService {
           .tz(dateString, 'YYYY-MM-DD', this.TIMEZONE)
           .startOf('day');
       } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(dateString)) {
+        // 🚨 FIX: Gunakan format yang tepat dan pertahankan timezone
         parsedMoment = moment.tz(dateString, 'YYYY-MM-DDTHH:mm', this.TIMEZONE);
+      } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.*/.test(dateString)) {
+        // Format ISO lengkap - convert ke WIB
+        parsedMoment = moment(dateString).tz(this.TIMEZONE);
       } else {
         // Fallback untuk format lain
         parsedMoment = moment(dateString).tz(this.TIMEZONE);
@@ -68,7 +72,8 @@ export class SewaService {
         throw new BadRequestException(`${fieldName} tidak valid`);
       }
 
-      const date = parsedMoment.toDate();
+      // 🚨 FIX: Gunakan .toDate() yang mempertahankan waktu lokal
+      const date = new Date(parsedMoment.format('YYYY-MM-DDTHH:mm:ss'));
 
       console.log(`✅ ${fieldName} parsed:`, {
         input: dateString,
@@ -76,6 +81,8 @@ export class SewaService {
         locale: date.toLocaleString('id-ID'),
         iso: date.toISOString(),
         timezone: this.TIMEZONE,
+        moment_wib: parsedMoment.format('DD/MM/YYYY HH:mm:ss'),
+        moment_iso: parsedMoment.toISOString(),
       });
 
       return date;
@@ -91,6 +98,7 @@ export class SewaService {
     if (typeof date === 'string') {
       return moment.tz(date, this.TIMEZONE);
     }
+    // 🚨 FIX: Handle Date object dengan benar
     return moment(date).tz(this.TIMEZONE);
   }
 
@@ -111,7 +119,7 @@ export class SewaService {
     // 🚨 STRICT VALIDATION: Tanggal sewa harus sama atau setelah waktu sekarang
     if (tglSewaMoment.isBefore(sekarangMoment)) {
       throw new BadRequestException(
-        `Tanggal sewa tidak boleh di masa lalu. Sekarang: ${sekarangMoment.format('DD/MM/YYYY HH:mm')}`,
+        `Tanggal sewa tidak boleh di masa lalu. Sekarang: ${sekarangMoment.format('DD/MM/YYYY HH:mm')}, Input: ${tglSewaMoment.format('DD/MM/YYYY HH:mm')}`,
       );
     }
 
@@ -196,6 +204,8 @@ export class SewaService {
       durasi,
       baseHarga,
       hargaMotor,
+      tgl_sewa: tglSewaMoment.format('DD/MM/YYYY HH:mm:ss'),
+      tgl_kembali: tglKembaliMoment.format('DD/MM/YYYY HH:mm:ss'),
       diff_hours: tglKembaliMoment.diff(tglSewaMoment, 'hours', true),
     });
 
@@ -338,6 +348,10 @@ export class SewaService {
       try {
         console.log('=== 🚀 CREATE SEWA PROCESS ===');
         console.log('📝 Input data:', createSewaDto);
+        console.log(
+          '🕐 Current server time WIB:',
+          moment().tz(this.TIMEZONE).format('DD/MM/YYYY HH:mm:ss'),
+        );
 
         // 1. Validasi Motor
         const motor = await prisma.motor.findUnique({
@@ -386,6 +400,16 @@ export class SewaService {
           'Tanggal kembali',
         );
 
+        console.log('🔍 Date Comparison:', {
+          input_tgl_sewa: createSewaDto.tgl_sewa,
+          parsed_tgl_sewa: tglSewaDate,
+          parsed_tgl_sewa_locale: tglSewaDate.toLocaleString('id-ID'),
+          input_tgl_kembali: createSewaDto.tgl_kembali,
+          parsed_tgl_kembali: tglKembaliDate,
+          parsed_tgl_kembali_locale: tglKembaliDate.toLocaleString('id-ID'),
+          server_time: new Date().toLocaleString('id-ID'),
+        });
+
         // 🚨 STRICT VALIDATION - tidak boleh masa lalu
         this.validateDates(tglSewaDate, tglKembaliDate);
 
@@ -410,6 +434,14 @@ export class SewaService {
 
         // 7. Create Sewa
         console.log('=== 💾 SAVING TO DATABASE ===');
+        console.log('📦 Data to save:', {
+          tgl_sewa: tglSewaDate,
+          tgl_sewa_locale: tglSewaDate.toLocaleString('id-ID'),
+          tgl_kembali: tglKembaliDate,
+          tgl_kembali_locale: tglKembaliDate.toLocaleString('id-ID'),
+          durasi_sewa: durasi,
+          total_harga: finalTotalHarga,
+        });
 
         const sewa = await prisma.sewa.create({
           data: {
@@ -445,9 +477,12 @@ export class SewaService {
         console.log('✅ Sewa created successfully:', {
           id: sewa.id,
           tgl_sewa: sewa.tgl_sewa,
+          tgl_sewa_locale: sewa.tgl_sewa.toLocaleString('id-ID'),
           tgl_kembali: sewa.tgl_kembali,
+          tgl_kembali_locale: sewa.tgl_kembali.toLocaleString('id-ID'),
           total_harga: sewa.total_harga,
           created_at: sewa.created_at,
+          created_at_locale: sewa.created_at.toLocaleString('id-ID'),
         });
 
         return sewa;
@@ -555,7 +590,11 @@ export class SewaService {
           },
         });
 
-        console.log('✅ Sewa updated successfully:', { id: updatedSewa.id });
+        console.log('✅ Sewa updated successfully:', {
+          id: updatedSewa.id,
+          tgl_kembali: updatedSewa.tgl_kembali,
+          tgl_kembali_locale: updatedSewa.tgl_kembali.toLocaleString('id-ID'),
+        });
 
         return updatedSewa;
       } catch (error) {
@@ -678,6 +717,7 @@ export class SewaService {
           sewa_id: id,
           history_id: history.id,
           denda,
+          tgl_selesai: tglSelesaiDate.toLocaleString('id-ID'),
         });
 
         return history;

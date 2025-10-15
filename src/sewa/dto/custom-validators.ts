@@ -15,15 +15,13 @@ function parseDateForValidation(dateString: string): moment.Moment {
     let parsedDate: moment.Moment;
 
     if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
-      // Format: '2025-10-15' (date only) - set ke 00:00 WIB
       parsedDate = moment
         .tz(dateString, 'YYYY-MM-DD', 'Asia/Jakarta')
         .startOf('day');
     } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(dateString)) {
-      // Format: '2025-10-15T14:30' (datetime without timezone) - assume WIB
+      // 🚨 FIX: Pertahankan timezone WIB
       parsedDate = moment.tz(dateString, 'YYYY-MM-DDTHH:mm', 'Asia/Jakarta');
     } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.*/.test(dateString)) {
-      // Format ISO dengan timezone - convert ke WIB
       parsedDate = moment(dateString).tz('Asia/Jakarta');
     } else {
       throw new Error('Format tanggal tidak valid');
