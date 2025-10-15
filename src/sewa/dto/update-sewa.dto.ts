@@ -1,3 +1,4 @@
+// src/sewa/dto/update-sewa.dto.ts
 import {
   IsString,
   IsOptional,
@@ -12,7 +13,10 @@ import {
   IsIn,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { IsValidDateTimeFormatConstraint } from './custom-validators';
+import {
+  IsValidDateTimeFormatConstraint,
+  IsReturnDateAfterExistingRentalDateConstraint,
+} from './custom-validators';
 
 export enum JaminanType {
   KTP = 'KTP',
@@ -51,6 +55,9 @@ export class UpdateSewaDto {
   @Validate(IsValidDateTimeFormatConstraint, {
     message: 'Format tanggal kembali harus YYYY-MM-DD atau YYYY-MM-DDTHH:mm',
   })
+  @Validate(IsReturnDateAfterExistingRentalDateConstraint, {
+    message: 'Tanggal kembali harus di masa depan',
+  })
   tgl_kembali?: string;
 
   @IsOptional()
@@ -68,7 +75,6 @@ export class UpdateSewaDto {
   })
   pembayaran?: PembayaranType;
 
-  // ✅ Field additional_costs
   @IsOptional()
   @IsArray({ message: 'Additional costs harus berupa array' })
   @ValidateNested({ each: true })

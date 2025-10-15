@@ -378,14 +378,15 @@ export class SewaService {
 
       // Handle tgl_kembali update
       if (updateSewaDto.tgl_kembali) {
-        // ✅ Parse WIB input ke UTC untuk database
-        const tglKembaliUTC = this.parseWIBToUTC(updateSewaDto.tgl_kembali);
-        updateData.tgl_kembali = tglKembaliUTC;
-
-        // ✅ Untuk calculation, gunakan existing tgl_sewa (dikonversi ke WIB)
+        // ✅ BUSINESS LOGIC VALIDATION - Validasi tanggal kembali
         const tglSewaWIB = this.convertUTCToWIB(sewa.tgl_sewa);
         const tglSewaMoment = moment(tglSewaWIB);
         const tglKembaliMoment = this.parseWIBMoment(updateSewaDto.tgl_kembali);
+
+        console.log('🔍 [Update Validation] Comparing dates:');
+        console.log('  - existing tgl_sewa:', tglSewaMoment.format());
+        console.log('  - new tgl_kembali:', tglKembaliMoment.format());
+        console.log('  - result:', tglKembaliMoment > tglSewaMoment);
 
         // Validate new return date
         if (tglSewaMoment.isSameOrAfter(tglKembaliMoment)) {
@@ -393,6 +394,23 @@ export class SewaService {
             'Tanggal kembali harus setelah tanggal sewa',
           );
         }
+
+        // Additional business logic validation
+        const minDuration = sewa.satuan_durasi === 'jam' ? 1 : 1; // minimal 1 jam atau 1 hari
+        const actualDuration =
+          sewa.satuan_durasi === 'jam'
+            ? tglKembaliMoment.diff(tglSewaMoment, 'hours', true)
+            : tglKembaliMoment.diff(tglSewaMoment, 'days', true);
+
+        if (actualDuration < minDuration) {
+          throw new BadRequestException(
+            `Durasi sewa minimal ${minDuration} ${sewa.satuan_durasi}`,
+          );
+        }
+
+        // ✅ Parse WIB input ke UTC untuk database
+        const tglKembaliUTC = this.parseWIBToUTC(updateSewaDto.tgl_kembali);
+        updateData.tgl_kembali = tglKembaliUTC;
 
         // Calculate new duration and price
         let durasi = sewa.durasi_sewa;

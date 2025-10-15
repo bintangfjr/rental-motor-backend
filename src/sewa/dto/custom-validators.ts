@@ -4,7 +4,6 @@ import {
   ValidatorConstraintInterface,
   ValidationArguments,
 } from 'class-validator';
-import { CreateSewaDto } from './create-sewa.dto';
 import * as moment from 'moment-timezone';
 
 // Helper function untuk parse date dengan timezone awareness
@@ -76,35 +75,37 @@ export class IsValidDateTimeFormatConstraint
   }
 }
 
-// Custom validator untuk memastikan tanggal kembali setelah tanggal sewa
-@ValidatorConstraint({ name: 'isReturnDateAfterRentalDate', async: false })
-export class IsReturnDateAfterRentalDateConstraint
+// ✅ VALIDATOR BARU: Untuk UpdateSewaDto - bandingkan dengan existing tgl_sewa
+@ValidatorConstraint({
+  name: 'isReturnDateAfterExistingRentalDate',
+  async: false,
+})
+export class IsReturnDateAfterExistingRentalDateConstraint
   implements ValidatorConstraintInterface
 {
   validate(tglKembali: string, args: ValidationArguments) {
-    const object = args.object as CreateSewaDto;
-    if (!object.tgl_sewa || !tglKembali) return true;
+    if (!tglKembali) return true;
 
     try {
-      console.log('🕐 [Validator] Comparing dates:');
-      console.log('  - tgl_sewa:', object.tgl_sewa);
+      console.log('🕐 [Update Validator] Validating return date:');
       console.log('  - tgl_kembali:', tglKembali);
 
-      const tglSewaDate = parseDateForValidation(object.tgl_sewa);
       const tglKembaliDate = parseDateForValidation(tglKembali);
+      const now = new Date();
 
-      console.log('  - parsed tgl_sewa:', tglSewaDate.toISOString());
       console.log('  - parsed tgl_kembali:', tglKembaliDate.toISOString());
-      console.log('  - result:', tglKembaliDate > tglSewaDate);
+      console.log('  - now:', now.toISOString());
+      console.log('  - result:', tglKembaliDate > now);
 
-      return tglKembaliDate > tglSewaDate;
+      // Untuk update, cukup pastikan tanggal kembali tidak di masa lalu
+      return tglKembaliDate > now;
     } catch {
       return true;
     }
   }
 
   defaultMessage() {
-    return 'Tanggal kembali harus setelah tanggal sewa';
+    return 'Tanggal kembali harus di masa depan';
   }
 }
 
@@ -121,7 +122,6 @@ export class IsRentalDateNotInPastConstraint
       console.log('  - tgl_sewa:', tglSewa);
 
       const tglSewaDate = parseDateForValidation(tglSewa);
-      // Gunakan waktu sekarang di timezone Asia/Jakarta
       const now = moment().tz('Asia/Jakarta').toDate();
       const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
 
@@ -138,5 +138,52 @@ export class IsRentalDateNotInPastConstraint
 
   defaultMessage() {
     return 'Tanggal sewa tidak boleh di masa lalu';
+  }
+}
+
+// ✅ VALIDATOR BARU: Untuk validasi business logic di service layer
+export class SewaDateValidator {
+  static validateUpdateDates(
+    existingTglSewa: Date,
+    newTglKembali: string,
+    satuanDurasi: string,
+  ): { isValid: boolean; error?: string } {
+    try {
+      const tglSewaWIB = moment(existingTglSewa).tz('Asia/Jakarta');
+      const tglKembaliWIB = moment.tz(newTglKembali, 'Asia/Jakarta');
+
+      console.log('🔍 [Business Validator] Comparing:');
+      console.log('  - existing tgl_sewa:', tglSewaWIB.format());
+      console.log('  - new tgl_kembali:', tglKembaliWIB.format());
+      console.log('  - result:', tglKembaliWIB > tglSewaWIB);
+
+      if (tglKembaliWIB.isSameOrBefore(tglSewaWIB)) {
+        return {
+          isValid: false,
+          error: 'Tanggal kembali harus setelah tanggal sewa',
+        };
+      }
+
+      // Additional business logic validation
+      const minDuration = satuanDurasi === 'jam' ? 1 : 1; // minimal 1 jam atau 1 hari
+      const actualDuration =
+        satuanDurasi === 'jam'
+          ? tglKembaliWIB.diff(tglSewaWIB, 'hours', true)
+          : tglKembaliWIB.diff(tglSewaWIB, 'days', true);
+
+      if (actualDuration < minDuration) {
+        return {
+          isValid: false,
+          error: `Durasi sewa minimal ${minDuration} ${satuanDurasi}`,
+        };
+      }
+
+      return { isValid: true };
+    } catch (error) {
+      return {
+        isValid: false,
+        error: 'Error validasi tanggal',
+      };
+    }
   }
 }
