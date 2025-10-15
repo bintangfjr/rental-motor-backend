@@ -3,7 +3,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { join } from 'path';
 import { AppModule } from './app.module';
-process.env.TZ = 'Asia/Bangkok';
+process.env.TZ = 'Asia/Jakarta';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);

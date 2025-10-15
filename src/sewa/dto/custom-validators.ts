@@ -6,9 +6,9 @@ import {
 } from 'class-validator';
 import * as moment from 'moment-timezone';
 
-// Helper function untuk parse date dengan timezone awareness
-function parseDateForValidation(dateString: string): Date {
-  if (!dateString) return new Date();
+// Helper function untuk parse date dengan timezone WIB
+function parseDateForValidation(dateString: string): moment.Moment {
+  if (!dateString) return moment().tz('Asia/Jakarta');
 
   console.log('🔧 [Validator] Parsing date:', dateString);
 
@@ -17,36 +17,34 @@ function parseDateForValidation(dateString: string): Date {
 
     if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
       // Format: '2025-10-15' (date only) - set ke 00:00 WIB
-      parsedDate = moment.tz(dateString, 'Asia/Jakarta').startOf('day');
+      parsedDate = moment
+        .tz(dateString, 'YYYY-MM-DD', 'Asia/Jakarta')
+        .startOf('day');
     } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(dateString)) {
       // Format: '2025-10-15T14:30' (datetime without timezone) - assume WIB
-      parsedDate = moment.tz(dateString, 'Asia/Jakarta');
-    } else {
-      // Other formats
+      parsedDate = moment.tz(dateString, 'YYYY-MM-DDTHH:mm', 'Asia/Jakarta');
+    } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.*/.test(dateString)) {
+      // Format ISO dengan timezone - convert ke WIB
       parsedDate = moment(dateString).tz('Asia/Jakarta');
+    } else {
+      throw new Error('Format tanggal tidak valid');
     }
 
-    const result = parsedDate.toDate();
+    if (!parsedDate.isValid()) {
+      throw new Error('Tanggal tidak valid');
+    }
 
     console.log('✅ [Validator] Parsed result:', {
       input: dateString,
-      moment: parsedDate.format(),
-      jsDate: result,
-      iso: result.toISOString(),
-      locale: result.toLocaleString('id-ID'),
+      moment: parsedDate.format('YYYY-MM-DD HH:mm:ss'),
+      iso: parsedDate.toISOString(),
+      locale: parsedDate.format('DD/MM/YYYY HH:mm:ss'),
     });
 
-    return result;
+    return parsedDate;
   } catch (error) {
     console.error('❌ [Validator] Error parsing date:', error);
-    // Fallback to original parsing
-    if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
-      return new Date(dateString + 'T00:00:00');
-    }
-    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(dateString)) {
-      return new Date(dateString + ':00');
-    }
-    return new Date(dateString);
+    throw error;
   }
 }
 
@@ -63,11 +61,17 @@ export class IsValidDateTimeFormatConstraint
     const isoRegex =
       /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?$/;
 
-    return (
+    const isValid =
       dateOnlyRegex.test(value) ||
       dateTimeRegex.test(value) ||
-      isoRegex.test(value)
-    );
+      isoRegex.test(value);
+
+    console.log('🔍 [Format Validator] Checking format:', {
+      value,
+      isValid,
+    });
+
+    return isValid;
   }
 
   defaultMessage() {
@@ -75,7 +79,96 @@ export class IsValidDateTimeFormatConstraint
   }
 }
 
-// ✅ VALIDATOR BARU: Untuk UpdateSewaDto - bandingkan dengan existing tgl_sewa
+// Validator untuk memastikan tanggal sewa tidak di masa lalu
+@ValidatorConstraint({ name: 'isRentalDateNotInPast', async: false })
+export class IsRentalDateNotInPastConstraint
+  implements ValidatorConstraintInterface
+{
+  validate(tglSewa: string) {
+    if (!tglSewa) return true;
+
+    try {
+      console.log(
+        '🕐 [Rental Date Validator] Checking if rental date is not in past:',
+      );
+      console.log('  - tgl_sewa:', tglSewa);
+
+      const tglSewaMoment = parseDateForValidation(tglSewa);
+      const sekarangMoment = moment().tz('Asia/Jakarta');
+      const sepuluhMenitLalu = sekarangMoment.clone().subtract(10, 'minutes');
+
+      console.log(
+        '  - parsed tgl_sewa (WIB):',
+        tglSewaMoment.format('DD/MM/YYYY HH:mm:ss'),
+      );
+      console.log(
+        '  - sekarang (WIB):',
+        sekarangMoment.format('DD/MM/YYYY HH:mm:ss'),
+      );
+      console.log(
+        '  - sepuluhMenitLalu (WIB):',
+        sepuluhMenitLalu.format('DD/MM/YYYY HH:mm:ss'),
+      );
+      console.log('  - result:', tglSewaMoment.isSameOrAfter(sepuluhMenitLalu));
+
+      return tglSewaMoment.isSameOrAfter(sepuluhMenitLalu);
+    } catch (error) {
+      console.error('❌ [Rental Date Validator] Error:', error);
+      return false;
+    }
+  }
+
+  defaultMessage() {
+    return 'Tanggal sewa tidak boleh di masa lalu';
+  }
+}
+
+// Validator untuk memastikan tanggal kembali setelah tanggal sewa
+@ValidatorConstraint({ name: 'isReturnDateAfterRentalDate', async: false })
+export class IsReturnDateAfterRentalDateConstraint
+  implements ValidatorConstraintInterface
+{
+  validate(tglKembali: string, args: ValidationArguments) {
+    if (!tglKembali) return true;
+
+    try {
+      const object = args.object as any;
+      const tglSewa = object.tgl_sewa;
+
+      if (!tglSewa) return true;
+
+      console.log(
+        '🕐 [Return Date Validator] Comparing rental and return dates:',
+      );
+      console.log('  - tgl_sewa:', tglSewa);
+      console.log('  - tgl_kembali:', tglKembali);
+
+      const tglSewaMoment = parseDateForValidation(tglSewa);
+      const tglKembaliMoment = parseDateForValidation(tglKembali);
+
+      console.log(
+        '  - tgl_sewa (WIB):',
+        tglSewaMoment.format('DD/MM/YYYY HH:mm:ss'),
+      );
+      console.log(
+        '  - tgl_kembali (WIB):',
+        tglKembaliMoment.format('DD/MM/YYYY HH:mm:ss'),
+      );
+      console.log('  - result:', tglKembaliMoment.isAfter(tglSewaMoment));
+
+      return tglKembaliMoment.isAfter(tglSewaMoment);
+    } catch (error) {
+      console.error('❌ [Return Date Validator] Error:', error);
+      return false;
+    }
+  }
+
+  defaultMessage() {
+    return 'Tanggal kembali harus setelah tanggal sewa';
+  }
+}
+
+// Validator untuk UpdateSewaDto - bandingkan dengan existing tgl_sewa
 @ValidatorConstraint({
   name: 'isReturnDateAfterExistingRentalDate',
   async: false,
@@ -87,20 +180,27 @@ export class IsReturnDateAfterExistingRentalDateConstraint
     if (!tglKembali) return true;
 
     try {
-      console.log('🕐 [Update Validator] Validating return date:');
+      console.log('🕐 [Update Return Date Validator] Validating return date:');
       console.log('  - tgl_kembali:', tglKembali);
 
-      const tglKembaliDate = parseDateForValidation(tglKembali);
-      const now = new Date();
+      const tglKembaliMoment = parseDateForValidation(tglKembali);
+      const sekarangMoment = moment().tz('Asia/Jakarta');
 
-      console.log('  - parsed tgl_kembali:', tglKembaliDate.toISOString());
-      console.log('  - now:', now.toISOString());
-      console.log('  - result:', tglKembaliDate > now);
+      console.log(
+        '  - parsed tgl_kembali (WIB):',
+        tglKembaliMoment.format('DD/MM/YYYY HH:mm:ss'),
+      );
+      console.log(
+        '  - sekarang (WIB):',
+        sekarangMoment.format('DD/MM/YYYY HH:mm:ss'),
+      );
+      console.log('  - result:', tglKembaliMoment.isAfter(sekarangMoment));
 
-      // Untuk update, cukup pastikan tanggal kembali tidak di masa lalu
-      return tglKembaliDate > now;
-    } catch {
-      return true;
+      // Untuk update, pastikan tanggal kembali tidak di masa lalu
+      return tglKembaliMoment.isAfter(sekarangMoment);
+    } catch (error) {
+      console.error('❌ [Update Return Date Validator] Error:', error);
+      return false;
     }
   }
 
@@ -109,54 +209,145 @@ export class IsReturnDateAfterExistingRentalDateConstraint
   }
 }
 
-// Custom validator untuk memastikan tanggal sewa tidak di masa lalu
-@ValidatorConstraint({ name: 'isRentalDateNotInPast', async: false })
-export class IsRentalDateNotInPastConstraint
+// Validator untuk tanggal selesai tidak di masa lalu
+@ValidatorConstraint({ name: 'isCompletionDateNotInPast', async: false })
+export class IsCompletionDateNotInPastConstraint
   implements ValidatorConstraintInterface
 {
-  validate(tglSewa: string) {
-    if (!tglSewa) return true;
+  validate(tglSelesai: string) {
+    if (!tglSelesai) return true;
 
     try {
-      console.log('🕐 [Validator] Checking if rental date is not in past:');
-      console.log('  - tgl_sewa:', tglSewa);
+      console.log(
+        '🕐 [Completion Date Validator] Checking if completion date is not in past:',
+      );
+      console.log('  - tgl_selesai:', tglSelesai);
 
-      const tglSewaDate = parseDateForValidation(tglSewa);
-      const now = moment().tz('Asia/Jakarta').toDate();
-      const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+      const tglSelesaiMoment = parseDateForValidation(tglSelesai);
+      const sekarangMoment = moment().tz('Asia/Jakarta');
+      const sepuluhMenitLalu = sekarangMoment.clone().subtract(10, 'minutes');
 
-      console.log('  - parsed tgl_sewa:', tglSewaDate.toISOString());
-      console.log('  - now (WIB):', now.toISOString());
-      console.log('  - tenMinutesAgo:', tenMinutesAgo.toISOString());
-      console.log('  - result:', tglSewaDate >= tenMinutesAgo);
+      console.log(
+        '  - parsed tgl_selesai (WIB):',
+        tglSelesaiMoment.format('DD/MM/YYYY HH:mm:ss'),
+      );
+      console.log(
+        '  - sekarang (WIB):',
+        sekarangMoment.format('DD/MM/YYYY HH:mm:ss'),
+      );
+      console.log(
+        '  - result:',
+        tglSelesaiMoment.isSameOrAfter(sepuluhMenitLalu),
+      );
 
-      return tglSewaDate >= tenMinutesAgo;
-    } catch {
-      return true;
+      return tglSelesaiMoment.isSameOrAfter(sepuluhMenitLalu);
+    } catch (error) {
+      console.error('❌ [Completion Date Validator] Error:', error);
+      return false;
     }
   }
 
   defaultMessage() {
-    return 'Tanggal sewa tidak boleh di masa lalu';
+    return 'Tanggal selesai tidak boleh di masa lalu';
   }
 }
 
-// ✅ VALIDATOR BARU: Untuk validasi business logic di service layer
+// Validator business logic untuk service layer
 export class SewaDateValidator {
+  static validateRentalDates(
+    tglSewa: string,
+    tglKembali: string,
+    satuanDurasi: string,
+  ): { isValid: boolean; error?: string } {
+    try {
+      console.log('🔍 [Business Validator] Validating rental dates:');
+      console.log('  - tgl_sewa:', tglSewa);
+      console.log('  - tgl_kembali:', tglKembali);
+      console.log('  - satuan_durasi:', satuanDurasi);
+
+      const tglSewaMoment = parseDateForValidation(tglSewa);
+      const tglKembaliMoment = parseDateForValidation(tglKembali);
+      const sekarangMoment = moment().tz('Asia/Jakarta');
+      const sepuluhMenitLalu = sekarangMoment.clone().subtract(10, 'minutes');
+
+      // Validasi tanggal sewa tidak di masa lalu
+      if (tglSewaMoment.isBefore(sepuluhMenitLalu)) {
+        return {
+          isValid: false,
+          error: 'Tanggal sewa tidak boleh di masa lalu',
+        };
+      }
+
+      // Validasi tanggal kembali setelah tanggal sewa
+      if (tglKembaliMoment.isSameOrBefore(tglSewaMoment)) {
+        return {
+          isValid: false,
+          error: 'Tanggal kembali harus setelah tanggal sewa',
+        };
+      }
+
+      // Validasi durasi minimal
+      const minDuration = satuanDurasi === 'jam' ? 1 : 1;
+      const actualDuration =
+        satuanDurasi === 'jam'
+          ? tglKembaliMoment.diff(tglSewaMoment, 'hours', true)
+          : tglKembaliMoment.diff(tglSewaMoment, 'days', true);
+
+      if (actualDuration < minDuration) {
+        return {
+          isValid: false,
+          error: `Durasi sewa minimal ${minDuration} ${satuanDurasi}`,
+        };
+      }
+
+      console.log('✅ [Business Validator] All validations passed');
+      return { isValid: true };
+    } catch (error) {
+      console.error('❌ [Business Validator] Error:', error);
+      return {
+        isValid: false,
+        error: 'Error validasi tanggal',
+      };
+    }
+  }
+
   static validateUpdateDates(
     existingTglSewa: Date,
     newTglKembali: string,
     satuanDurasi: string,
   ): { isValid: boolean; error?: string } {
     try {
+      console.log('🔍 [Business Update Validator] Validating update dates:');
+      console.log('  - existing_tgl_sewa:', existingTglSewa);
+      console.log('  - new_tgl_kembali:', newTglKembali);
+      console.log('  - satuan_durasi:', satuanDurasi);
+
       const tglSewaWIB = moment(existingTglSewa).tz('Asia/Jakarta');
-      const tglKembaliWIB = moment.tz(newTglKembali, 'Asia/Jakarta');
+      const tglKembaliWIB = parseDateForValidation(newTglKembali);
+      const sekarangMoment = moment().tz('Asia/Jakarta');
 
-      console.log('🔍 [Business Validator] Comparing:');
-      console.log('  - existing tgl_sewa:', tglSewaWIB.format());
-      console.log('  - new tgl_kembali:', tglKembaliWIB.format());
-      console.log('  - result:', tglKembaliWIB > tglSewaWIB);
+      console.log(
+        '  - existing tgl_sewa (WIB):',
+        tglSewaWIB.format('DD/MM/YYYY HH:mm:ss'),
+      );
+      console.log(
+        '  - new tgl_kembali (WIB):',
+        tglKembaliWIB.format('DD/MM/YYYY HH:mm:ss'),
+      );
+      console.log(
+        '  - sekarang (WIB):',
+        sekarangMoment.format('DD/MM/YYYY HH:mm:ss'),
+      );
 
+      // Validasi tanggal kembali tidak di masa lalu
+      if (tglKembaliWIB.isBefore(sekarangMoment)) {
+        return {
+          isValid: false,
+          error: 'Tanggal kembali harus di masa depan',
+        };
+      }
+
+      // Validasi tanggal kembali setelah tanggal sewa
       if (tglKembaliWIB.isSameOrBefore(tglSewaWIB)) {
         return {
           isValid: false,
@@ -164,8 +355,8 @@ export class SewaDateValidator {
         };
       }
 
-      // Additional business logic validation
-      const minDuration = satuanDurasi === 'jam' ? 1 : 1; // minimal 1 jam atau 1 hari
+      // Validasi durasi minimal
+      const minDuration = satuanDurasi === 'jam' ? 1 : 1;
       const actualDuration =
         satuanDurasi === 'jam'
           ? tglKembaliWIB.diff(tglSewaWIB, 'hours', true)
@@ -178,11 +369,67 @@ export class SewaDateValidator {
         };
       }
 
+      console.log('✅ [Business Update Validator] All validations passed');
       return { isValid: true };
     } catch (error) {
+      console.error('❌ [Business Update Validator] Error:', error);
       return {
         isValid: false,
         error: 'Error validasi tanggal',
+      };
+    }
+  }
+
+  static validateCompletionDate(
+    tglSelesai: string,
+    tglKembaliJadwal: Date,
+  ): { isValid: boolean; error?: string } {
+    try {
+      console.log(
+        '🔍 [Business Completion Validator] Validating completion date:',
+      );
+      console.log('  - tgl_selesai:', tglSelesai);
+      console.log('  - tgl_kembali_jadwal:', tglKembaliJadwal);
+
+      const tglSelesaiMoment = parseDateForValidation(tglSelesai);
+      const tglKembaliMoment = moment(tglKembaliJadwal).tz('Asia/Jakarta');
+      const sekarangMoment = moment().tz('Asia/Jakarta');
+      const sepuluhMenitLalu = sekarangMoment.clone().subtract(10, 'minutes');
+
+      // Validasi tanggal selesai tidak di masa lalu
+      if (tglSelesaiMoment.isBefore(sepuluhMenitLalu)) {
+        return {
+          isValid: false,
+          error: 'Tanggal selesai tidak boleh di masa lalu',
+        };
+      }
+
+      // PERBAIKAN: Variable tglKembaliMoment sekarang digunakan
+      // Validasi bahwa tanggal selesai tidak lebih dari 7 hari sebelum tanggal kembali jadwal
+      // (opsional, tergantung business rule)
+      if (
+        tglSelesaiMoment.isBefore(tglKembaliMoment.clone().subtract(7, 'days'))
+      ) {
+        return {
+          isValid: false,
+          error:
+            'Tanggal selesai tidak boleh lebih dari 7 hari sebelum tanggal kembali jadwal',
+        };
+      }
+
+      console.log('📅 Completion date details:', {
+        tgl_selesai: tglSelesaiMoment.format('DD/MM/YYYY HH:mm:ss'),
+        tgl_kembali_jadwal: tglKembaliMoment.format('DD/MM/YYYY HH:mm:ss'),
+        selisih_hari: tglKembaliMoment.diff(tglSelesaiMoment, 'days'),
+      });
+
+      console.log('✅ [Business Completion Validator] Validation passed');
+      return { isValid: true };
+    } catch (error) {
+      console.error('❌ [Business Completion Validator] Error:', error);
+      return {
+        isValid: false,
+        error: 'Error validasi tanggal selesai',
       };
     }
   }
