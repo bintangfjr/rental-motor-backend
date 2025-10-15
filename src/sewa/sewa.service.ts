@@ -94,27 +94,65 @@ export class SewaService {
     return moment(date).tz(this.TIMEZONE);
   }
 
-  // ✅ METHOD: Validasi tanggal
+  // ✅ METHOD: Validasi tanggal dengan STRICT RULES
   private validateDates(tglSewa: Date, tglKembali: Date): void {
     const tglSewaMoment = this.getMomentWIB(tglSewa);
     const tglKembaliMoment = this.getMomentWIB(tglKembali);
+    const sekarangMoment = moment().tz(this.TIMEZONE);
 
-    console.log('📅 Validating dates:', {
+    console.log('📅 STRICT Date Validation:', {
+      sekarang: sekarangMoment.format('DD/MM/YYYY HH:mm:ss'),
       tgl_sewa: tglSewaMoment.format('DD/MM/YYYY HH:mm:ss'),
       tgl_kembali: tglKembaliMoment.format('DD/MM/YYYY HH:mm:ss'),
-      is_valid: tglKembaliMoment.isAfter(tglSewaMoment),
+      is_tgl_sewa_valid: tglSewaMoment.isSameOrAfter(sekarangMoment),
+      is_tgl_kembali_valid: tglKembaliMoment.isAfter(tglSewaMoment),
     });
 
-    if (tglSewaMoment.isSameOrAfter(tglKembaliMoment)) {
+    // 🚨 STRICT VALIDATION: Tanggal sewa harus sama atau setelah waktu sekarang
+    if (tglSewaMoment.isBefore(sekarangMoment)) {
+      throw new BadRequestException(
+        `Tanggal sewa tidak boleh di masa lalu. Sekarang: ${sekarangMoment.format('DD/MM/YYYY HH:mm')}`,
+      );
+    }
+
+    // Validasi tanggal kembali setelah tanggal sewa
+    if (tglKembaliMoment.isSameOrBefore(tglSewaMoment)) {
       throw new BadRequestException(
         'Tanggal kembali harus setelah tanggal sewa',
       );
     }
 
-    // Validasi tidak di masa lalu (dengan toleransi 10 menit)
-    const sekarang = moment().tz(this.TIMEZONE).subtract(10, 'minutes');
-    if (tglSewaMoment.isBefore(sekarang)) {
-      throw new BadRequestException('Tanggal sewa tidak boleh di masa lalu');
+    // Validasi durasi minimal 1 jam untuk satuan jam
+    const diffMinutes = tglKembaliMoment.diff(tglSewaMoment, 'minutes');
+    if (diffMinutes < 60) {
+      throw new BadRequestException('Durasi sewa minimal 1 jam');
+    }
+  }
+
+  // ✅ METHOD: Validasi untuk update (lebih longgar)
+  private validateUpdateDates(
+    existingTglSewa: Date,
+    newTglKembali: Date,
+  ): void {
+    const tglSewaMoment = this.getMomentWIB(existingTglSewa);
+    const tglKembaliMoment = this.getMomentWIB(newTglKembali);
+    const sekarangMoment = moment().tz(this.TIMEZONE);
+
+    console.log('📅 UPDATE Date Validation:', {
+      existing_tgl_sewa: tglSewaMoment.format('DD/MM/YYYY HH:mm:ss'),
+      new_tgl_kembali: tglKembaliMoment.format('DD/MM/YYYY HH:mm:ss'),
+      sekarang: sekarangMoment.format('DD/MM/YYYY HH:mm:ss'),
+    });
+
+    // Untuk update, tanggal kembali harus di masa depan
+    if (tglKembaliMoment.isBefore(sekarangMoment)) {
+      throw new BadRequestException('Tanggal kembali harus di masa depan');
+    }
+
+    if (tglKembaliMoment.isSameOrBefore(tglSewaMoment)) {
+      throw new BadRequestException(
+        'Tanggal kembali harus setelah tanggal sewa',
+      );
     }
   }
 
@@ -299,6 +337,7 @@ export class SewaService {
     return this.prisma.$transaction(async (prisma) => {
       try {
         console.log('=== 🚀 CREATE SEWA PROCESS ===');
+        console.log('📝 Input data:', createSewaDto);
 
         // 1. Validasi Motor
         const motor = await prisma.motor.findUnique({
@@ -335,8 +374,8 @@ export class SewaService {
           throw new BadRequestException('Penyewa memiliki sewa aktif');
         }
 
-        // 3. Parse dan Validasi Dates
-        console.log('=== 🕐 DATE PROCESSING ===');
+        // 3. Parse dan Validasi Dates dengan STRICT RULES
+        console.log('=== 🕐 STRICT DATE PROCESSING ===');
 
         const tglSewaDate = this.parseDateInput(
           createSewaDto.tgl_sewa,
@@ -347,6 +386,7 @@ export class SewaService {
           'Tanggal kembali',
         );
 
+        // 🚨 STRICT VALIDATION - tidak boleh masa lalu
         this.validateDates(tglSewaDate, tglKembaliDate);
 
         // 4. Calculation Duration & Price
@@ -368,7 +408,7 @@ export class SewaService {
           createSewaDto.jaminan,
         );
 
-        // 7. ✅ GUNAKAN PRISMA NORMAL - TANPA RAW SQL
+        // 7. Create Sewa
         console.log('=== 💾 SAVING TO DATABASE ===');
 
         const sewa = await prisma.sewa.create({
@@ -407,6 +447,7 @@ export class SewaService {
           tgl_sewa: sewa.tgl_sewa,
           tgl_kembali: sewa.tgl_kembali,
           total_harga: sewa.total_harga,
+          created_at: sewa.created_at,
         });
 
         return sewa;
@@ -454,12 +495,8 @@ export class SewaService {
             'Tanggal kembali',
           );
 
-          // Validasi tanggal kembali baru
-          if (tglKembaliDate <= sewa.tgl_sewa) {
-            throw new BadRequestException(
-              'Tanggal kembali harus setelah tanggal sewa',
-            );
-          }
+          // Validasi untuk update (lebih longgar)
+          this.validateUpdateDates(sewa.tgl_sewa, tglKembaliDate);
 
           updateData.tgl_kembali = tglKembaliDate;
 
@@ -508,7 +545,6 @@ export class SewaService {
 
         console.log('📝 Update data:', updateData);
 
-        // ✅ GUNAKAN PRISMA NORMAL
         const updatedSewa = await prisma.sewa.update({
           where: { id },
           data: updateData,
@@ -563,12 +599,22 @@ export class SewaService {
 
         const tglKembaliMoment = this.getMomentWIB(sewa.tgl_kembali);
         const tglSelesaiMoment = this.getMomentWIB(tglSelesaiDate);
+        const sekarangMoment = moment().tz(this.TIMEZONE);
 
-        console.log('📅 Completion date calculation:', {
+        console.log('📅 Completion date validation:', {
           tgl_kembali_jadwal: tglKembaliMoment.format('DD/MM/YYYY HH:mm:ss'),
           tgl_selesai_aktual: tglSelesaiMoment.format('DD/MM/YYYY HH:mm:ss'),
+          sekarang: sekarangMoment.format('DD/MM/YYYY HH:mm:ss'),
           is_late: tglSelesaiMoment.isAfter(tglKembaliMoment),
+          is_future: tglSelesaiMoment.isAfter(sekarangMoment),
         });
+
+        // Validasi: tanggal selesai tidak boleh di masa depan
+        if (tglSelesaiMoment.isAfter(sekarangMoment)) {
+          throw new BadRequestException(
+            'Tanggal selesai tidak boleh di masa depan',
+          );
+        }
 
         let denda = 0;
         let statusSelesai = this.STATUS_SELESAI.TEPAT_WAKTU;
@@ -601,7 +647,6 @@ export class SewaService {
           });
         }
 
-        // ✅ GUNAKAN PRISMA NORMAL
         const history = await prisma.history.create({
           data: {
             sewa_id: id,
@@ -712,7 +757,6 @@ export class SewaService {
         throw new NotFoundException('Sewa tidak ditemukan');
       }
 
-      // ✅ GUNAKAN PRISMA NORMAL
       const updatedSewa = await this.prisma.sewa.update({
         where: { id },
         data: { catatan_tambahan },
