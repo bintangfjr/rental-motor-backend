@@ -1,3 +1,4 @@
+// src/sewa/sewa.service.ts
 import {
   Injectable,
   BadRequestException,
@@ -31,41 +32,59 @@ export class SewaService {
     TERLAMBAT: 'Terlambat',
   };
 
-  // ✅ METHOD BARU: Parse datetime ke format SQL datetime string
-  private parseDateTimeForDB(dateString: string): string {
-    if (!dateString)
-      return moment().tz('Asia/Jakarta').format('YYYY-MM-DD HH:mm:ss');
+  // ✅ METHOD: Parse WIB string ke Date object (UTC)
+  private parseWIBToUTC(dateString: string): Date {
+    if (!dateString) return new Date();
 
-    console.log('🔧 Parsing date for DB:', dateString);
+    console.log('🔧 Parsing WIB to UTC:', dateString);
 
     try {
-      let dateMoment: moment.Moment;
+      let parsedDate: moment.Moment;
 
       if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
         // Format: '2025-10-15' (date only)
-        dateMoment = moment.tz(dateString, 'Asia/Jakarta').startOf('day');
+        parsedDate = moment.tz(dateString, 'Asia/Jakarta').startOf('day');
       } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(dateString)) {
         // Format: '2025-10-15T14:30' (datetime without timezone)
-        dateMoment = moment.tz(dateString, 'Asia/Jakarta');
+        parsedDate = moment.tz(dateString, 'Asia/Jakarta');
       } else {
-        dateMoment = moment(dateString).tz('Asia/Jakarta');
+        parsedDate = moment(dateString).tz('Asia/Jakarta');
       }
 
-      const result = dateMoment.format('YYYY-MM-DD HH:mm:ss');
+      // Convert to UTC untuk disimpan di database
+      const utcDate = parsedDate.utc().toDate();
 
-      console.log('✅ Date for DB:', {
+      console.log('✅ WIB to UTC result:', {
         input: dateString,
-        dbFormat: result,
-        moment: dateMoment.format(),
-        iso: dateMoment.toISOString(),
-        timezone: 'Asia/Jakarta',
+        wib: parsedDate.format(),
+        utc: utcDate.toISOString(),
+        locale: utcDate.toLocaleString('id-ID'),
       });
 
-      return result;
+      return utcDate;
     } catch (error) {
-      console.error('❌ Error parsing date for DB:', error);
-      return moment().tz('Asia/Jakarta').format('YYYY-MM-DD HH:mm:ss');
+      console.error('❌ Error parsing date:', error);
+      return new Date();
     }
+  }
+
+  // ✅ METHOD: Convert UTC Date dari database ke WIB untuk response
+  private convertUTCToWIB(date: Date): Date {
+    if (!date) return new Date();
+
+    const wibDate = moment(date).tz('Asia/Jakarta').toDate();
+
+    console.log('🔄 UTC to WIB:', {
+      utc: date.toISOString(),
+      wib: wibDate.toISOString(),
+    });
+
+    return wibDate;
+  }
+
+  // ✅ METHOD: Untuk calculation, parse sebagai WIB moment
+  private parseWIBMoment(dateString: string): moment.Moment {
+    return moment.tz(dateString, 'Asia/Jakarta');
   }
 
   // Helper function untuk menghitung total dari additional costs
@@ -97,7 +116,7 @@ export class SewaService {
   }
 
   async findAll() {
-    return this.prisma.sewa.findMany({
+    const sewas = await this.prisma.sewa.findMany({
       where: {
         status: { not: this.STATUS.SELESAI },
       },
@@ -126,6 +145,15 @@ export class SewaService {
       },
       orderBy: { created_at: 'desc' },
     });
+
+    // ✅ Convert semua UTC dates ke WIB untuk response
+    return sewas.map((sewa) => ({
+      ...sewa,
+      tgl_sewa: this.convertUTCToWIB(sewa.tgl_sewa),
+      tgl_kembali: this.convertUTCToWIB(sewa.tgl_kembali),
+      created_at: this.convertUTCToWIB(sewa.created_at),
+      updated_at: this.convertUTCToWIB(sewa.updated_at),
+    }));
   }
 
   async findOne(id: number) {
@@ -164,16 +192,24 @@ export class SewaService {
       throw new NotFoundException('Sewa tidak ditemukan');
     }
 
-    return sewa;
+    // ✅ Convert semua UTC dates ke WIB untuk response
+    return {
+      ...sewa,
+      tgl_sewa: this.convertUTCToWIB(sewa.tgl_sewa),
+      tgl_kembali: this.convertUTCToWIB(sewa.tgl_kembali),
+      created_at: this.convertUTCToWIB(sewa.created_at),
+      updated_at: this.convertUTCToWIB(sewa.updated_at),
+      histories: sewa.histories.map((history) => ({
+        ...history,
+        tgl_selesai: this.convertUTCToWIB(history.tgl_selesai),
+        created_at: this.convertUTCToWIB(history.created_at),
+        updated_at: this.convertUTCToWIB(history.updated_at),
+      })),
+    };
   }
 
   async create(createSewaDto: CreateSewaDto, adminId: number) {
     return this.prisma.$transaction(async (prisma) => {
-      // ✅ DEBUG: Cek timezone database session
-      const dbTimezone =
-        await prisma.$queryRaw`SELECT @@session.time_zone as timezone`;
-      console.log('🗄️ Database session timezone:', dbTimezone);
-
       // Check if motor exists and is available
       const motor = await prisma.motor.findUnique({
         where: { id: createSewaDto.motor_id },
@@ -211,24 +247,21 @@ export class SewaService {
         throw new BadRequestException('Penyewa memiliki sewa aktif');
       }
 
-      // ✅ PERBAIKAN: Parse dates sebagai string SQL datetime
-      console.log('=== 🕐 DATE PARSING FOR DB ===');
-      console.log('Input - tgl_sewa:', createSewaDto.tgl_sewa);
-      console.log('Input - tgl_kembali:', createSewaDto.tgl_kembali);
+      // ✅ PERBAIKAN: Parse WIB input ke UTC untuk database
+      console.log('=== 🕐 CREATE - DATE CONVERSION ===');
+      console.log('Input WIB - tgl_sewa:', createSewaDto.tgl_sewa);
+      console.log('Input WIB - tgl_kembali:', createSewaDto.tgl_kembali);
 
-      const tglSewaDB = this.parseDateTimeForDB(createSewaDto.tgl_sewa);
-      const tglKembaliDB = this.parseDateTimeForDB(createSewaDto.tgl_kembali);
+      const tglSewaUTC = this.parseWIBToUTC(createSewaDto.tgl_sewa);
+      const tglKembaliUTC = this.parseWIBToUTC(createSewaDto.tgl_kembali);
 
-      console.log('For DB - tgl_sewa:', tglSewaDB);
-      console.log('For DB - tgl_kembali:', tglKembaliDB);
-      console.log('============================');
+      console.log('Stored UTC - tgl_sewa:', tglSewaUTC.toISOString());
+      console.log('Stored UTC - tgl_kembali:', tglKembaliUTC.toISOString());
+      console.log('================================');
 
-      // Untuk perhitungan duration, gunakan moment objects
-      const tglSewaMoment = moment.tz(createSewaDto.tgl_sewa, 'Asia/Jakarta');
-      const tglKembaliMoment = moment.tz(
-        createSewaDto.tgl_kembali,
-        'Asia/Jakarta',
-      );
+      // ✅ Untuk calculation, gunakan WIB moments
+      const tglSewaMoment = this.parseWIBMoment(createSewaDto.tgl_sewa);
+      const tglKembaliMoment = this.parseWIBMoment(createSewaDto.tgl_kembali);
 
       // Validate dates
       if (tglSewaMoment.isSameOrAfter(tglKembaliMoment)) {
@@ -242,25 +275,20 @@ export class SewaService {
       let baseHarga: number;
 
       if (createSewaDto.satuan_durasi === 'jam') {
-        // Untuk satuan jam, hitung per jam dengan pembulatan ke atas
         durasi = Math.ceil(tglKembaliMoment.diff(tglSewaMoment, 'hours', true));
         baseHarga = Math.ceil((motor.harga / 24) * durasi);
       } else {
-        // Untuk satuan hari, 1 hari = 24 jam
         const diffInHours = tglKembaliMoment.diff(tglSewaMoment, 'hours', true);
 
-        // Minimal 1 hari
         if (diffInHours <= 24) {
           durasi = 1;
           baseHarga = motor.harga;
         } else {
-          // Untuk lebih dari 24 jam, hitung per 24 jam
           durasi = Math.ceil(diffInHours / 24);
           baseHarga = motor.harga * durasi;
         }
       }
 
-      // Ensure minimum duration
       if (durasi < 1) {
         durasi = 1;
         if (createSewaDto.satuan_durasi === 'jam') {
@@ -276,7 +304,6 @@ export class SewaService {
       const { totalDiscount, totalAdditional, netAdditionalCosts } =
         this.calculateAdditionalCostsTotals(additionalCosts);
 
-      // Total harga = base harga + biaya tambahan - potongan
       const finalTotalHarga = Math.max(0, baseHarga + netAdditionalCosts);
 
       // Konversi jaminan dari array ke string
@@ -284,50 +311,24 @@ export class SewaService {
         ? createSewaDto.jaminan.join(', ')
         : createSewaDto.jaminan;
 
-      // ✅ SOLUSI FINAL: Gunakan RAW SQL untuk bypass Prisma timezone conversion
-      console.log('🚀 Using RAW SQL to insert data...');
-
-      // Prepare additional_costs as JSON string
-      const additionalCostsJson =
-        additionalCosts.length > 0 ? JSON.stringify(additionalCosts) : null;
-
-      // Insert menggunakan RAW SQL
-      const result = await prisma.$executeRaw`
-        INSERT INTO sewas (
-          motor_id, penyewa_id, admin_id, status, jaminan, pembayaran,
-          durasi_sewa, tgl_sewa, tgl_kembali, total_harga, satuan_durasi, status_notifikasi,
-          additional_costs, catatan_tambahan, created_at, updated_at
-        ) VALUES (
-          ${createSewaDto.motor_id}, 
-          ${createSewaDto.penyewa_id}, 
-          ${adminId}, 
-          'aktif',
-          ${jaminanString}, 
-          ${createSewaDto.pembayaran}, 
-          ${durasi},
-          ${tglSewaDB}, 
-          ${tglKembaliDB}, 
-          ${finalTotalHarga}, 
-          ${createSewaDto.satuan_durasi}, 
-          'menunggu',
-          ${additionalCostsJson},
-          ${createSewaDto.catatan_tambahan || null},
-          NOW(), 
-          NOW()
-        )
-      `;
-
-      console.log('✅ RAW SQL insert result:', result);
-
-      // Get the inserted sewa
-      const insertedSewa = await prisma.sewa.findFirst({
-        where: {
+      // ✅ Simpan ke database sebagai UTC
+      const sewa = await prisma.sewa.create({
+        data: {
           motor_id: createSewaDto.motor_id,
           penyewa_id: createSewaDto.penyewa_id,
           admin_id: adminId,
           status: 'aktif',
+          jaminan: jaminanString,
+          pembayaran: createSewaDto.pembayaran,
+          durasi_sewa: durasi,
+          tgl_sewa: tglSewaUTC, // ✅ Stored as UTC
+          tgl_kembali: tglKembaliUTC, // ✅ Stored as UTC
+          total_harga: finalTotalHarga,
+          satuan_durasi: createSewaDto.satuan_durasi,
+          status_notifikasi: 'menunggu',
+          additional_costs: additionalCosts.length > 0 ? additionalCosts : null,
+          catatan_tambahan: createSewaDto.catatan_tambahan,
         },
-        orderBy: { id: 'desc' },
         include: {
           motor: true,
           penyewa: true,
@@ -335,14 +336,10 @@ export class SewaService {
         },
       });
 
-      if (!insertedSewa) {
-        throw new BadRequestException('Gagal membuat sewa');
-      }
-
-      console.log('✅ Sewa created with dates:', {
-        id: insertedSewa.id,
-        tgl_sewa: insertedSewa.tgl_sewa,
-        tgl_kembali: insertedSewa.tgl_kembali,
+      console.log('✅ Sewa created - Database stored as UTC:', {
+        id: sewa.id,
+        tgl_sewa_db: sewa.tgl_sewa,
+        tgl_kembali_db: sewa.tgl_kembali,
       });
 
       // Update motor status to 'disewa'
@@ -351,17 +348,12 @@ export class SewaService {
         data: { status: 'disewa' },
       });
 
-      // Debug log
-      console.log('Sewa created with additional costs:', {
-        baseHarga,
-        totalDiscount,
-        totalAdditional,
-        netAdditionalCosts,
-        finalTotalHarga,
-        additionalCosts,
-      });
-
-      return insertedSewa;
+      // ✅ Return sebagai WIB
+      return {
+        ...sewa,
+        tgl_sewa: this.convertUTCToWIB(sewa.tgl_sewa),
+        tgl_kembali: this.convertUTCToWIB(sewa.tgl_kembali),
+      };
     });
   }
 
@@ -382,22 +374,18 @@ export class SewaService {
         );
       }
 
-      // Build update fields dan values
-      const updateFields = [];
-      const updateValues = [];
+      const updateData: any = {};
 
       // Handle tgl_kembali update
       if (updateSewaDto.tgl_kembali) {
-        const tglKembaliDB = this.parseDateTimeForDB(updateSewaDto.tgl_kembali);
-        updateFields.push('tgl_kembali = ?');
-        updateValues.push(tglKembaliDB);
+        // ✅ Parse WIB input ke UTC untuk database
+        const tglKembaliUTC = this.parseWIBToUTC(updateSewaDto.tgl_kembali);
+        updateData.tgl_kembali = tglKembaliUTC;
 
-        // Untuk perhitungan duration, gunakan moment objects
-        const tglSewaMoment = moment(sewa.tgl_sewa);
-        const tglKembaliMoment = moment.tz(
-          updateSewaDto.tgl_kembali,
-          'Asia/Jakarta',
-        );
+        // ✅ Untuk calculation, gunakan existing tgl_sewa (dikonversi ke WIB)
+        const tglSewaWIB = this.convertUTCToWIB(sewa.tgl_sewa);
+        const tglSewaMoment = moment(tglSewaWIB);
+        const tglKembaliMoment = this.parseWIBMoment(updateSewaDto.tgl_kembali);
 
         // Validate new return date
         if (tglSewaMoment.isSameOrAfter(tglKembaliMoment)) {
@@ -431,10 +419,8 @@ export class SewaService {
           }
         }
 
-        updateFields.push('durasi_sewa = ?');
-        updateValues.push(durasi);
-        updateFields.push('total_harga = ?');
-        updateValues.push(baseHarga);
+        updateData.durasi_sewa = durasi;
+        updateData.total_harga = baseHarga;
       }
 
       // Handle additional_costs update
@@ -444,56 +430,36 @@ export class SewaService {
         const { netAdditionalCosts } =
           this.calculateAdditionalCostsTotals(additionalCosts);
 
-        const baseHarga = updateSewaDto.tgl_kembali
-          ? updateValues[updateValues.length - 1] // ambil dari calculation di atas
-          : sewa.total_harga;
-
+        const baseHarga = updateData.total_harga || sewa.total_harga;
         const finalTotalHarga = Math.max(0, baseHarga + netAdditionalCosts);
 
-        updateFields.push('additional_costs = ?');
-        updateValues.push(JSON.stringify(additionalCosts));
-        updateFields.push('total_harga = ?');
-        updateValues.push(finalTotalHarga);
+        updateData.additional_costs =
+          additionalCosts.length > 0 ? additionalCosts : null;
+        updateData.total_harga = finalTotalHarga;
       }
 
       if (updateSewaDto.jaminan !== undefined) {
         const jaminanString = Array.isArray(updateSewaDto.jaminan)
           ? updateSewaDto.jaminan.join(', ')
           : updateSewaDto.jaminan;
-        updateFields.push('jaminan = ?');
-        updateValues.push(jaminanString);
+        updateData.jaminan = jaminanString;
       }
 
       if (updateSewaDto.pembayaran !== undefined) {
-        updateFields.push('pembayaran = ?');
-        updateValues.push(updateSewaDto.pembayaran);
+        updateData.pembayaran = updateSewaDto.pembayaran;
       }
 
-      // Handle catatan tambahan
       if (updateSewaDto.catatan_tambahan !== undefined) {
-        updateFields.push('catatan_tambahan = ?');
-        updateValues.push(updateSewaDto.catatan_tambahan);
+        updateData.catatan_tambahan = updateSewaDto.catatan_tambahan;
       }
 
-      // Jika tidak ada data yang diupdate, throw error
-      if (updateFields.length === 0) {
+      if (Object.keys(updateData).length === 0) {
         throw new BadRequestException('Tidak ada data yang diupdate');
       }
 
-      // ✅ Gunakan RAW SQL untuk update
-      updateFields.push('updated_at = NOW()');
-      updateValues.push(id);
-
-      const sql = `UPDATE sewas SET ${updateFields.join(', ')} WHERE id = ?`;
-
-      console.log('🚀 RAW SQL Update:', sql);
-      console.log('📦 Values:', updateValues);
-
-      await prisma.$executeRawUnsafe(sql, ...updateValues);
-
-      // Get updated sewa
-      const updatedSewa = await prisma.sewa.findUnique({
+      const updatedSewa = await prisma.sewa.update({
         where: { id },
+        data: updateData,
         include: {
           motor: true,
           penyewa: true,
@@ -501,7 +467,12 @@ export class SewaService {
         },
       });
 
-      return updatedSewa;
+      // ✅ Return sebagai WIB
+      return {
+        ...updatedSewa,
+        tgl_sewa: this.convertUTCToWIB(updatedSewa.tgl_sewa),
+        tgl_kembali: this.convertUTCToWIB(updatedSewa.tgl_kembali),
+      };
     });
   }
 
@@ -520,70 +491,68 @@ export class SewaService {
         throw new BadRequestException('Sewa sudah selesai');
       }
 
-      // ✅ PERBAIKAN: Parse tgl_selesai sebagai string SQL datetime
-      const tglSelesaiDB = this.parseDateTimeForDB(selesaiSewaDto.tgl_selesai);
-      const tglKembaliJadwal = moment(sewa.tgl_kembali);
-      const tglSelesaiMoment = moment.tz(
-        selesaiSewaDto.tgl_selesai,
-        'Asia/Jakarta',
-      );
+      // ✅ Parse WIB input ke UTC untuk database
+      const tglSelesaiUTC = this.parseWIBToUTC(selesaiSewaDto.tgl_selesai);
 
-      console.log('=== 🕐 SELESAI DATE DEBUG ===');
-      console.log('tgl_kembali_jadwal:', sewa.tgl_kembali);
-      console.log('tgl_selesai_aktual:', tglSelesaiDB);
-      console.log('==========================');
+      // ✅ Untuk calculation, gunakan dates sebagai WIB
+      const tglKembaliWIB = this.convertUTCToWIB(sewa.tgl_kembali);
+      const tglKembaliMoment = moment(tglKembaliWIB);
+      const tglSelesaiMoment = this.parseWIBMoment(selesaiSewaDto.tgl_selesai);
+
+      console.log('=== 🕐 SELESAI - DATE CALCULATION ===');
+      console.log(
+        'tgl_kembali_jadwal (WIB):',
+        tglKembaliWIB.toLocaleString('id-ID'),
+      );
+      console.log('tgl_selesai_aktual (WIB):', selesaiSewaDto.tgl_selesai);
+      console.log('==================================');
 
       let denda = 0;
       let statusSelesai = this.STATUS_SELESAI.TEPAT_WAKTU;
       let keterlambatanMenit = 0;
 
-      // Calculate penalty if late
-      if (tglSelesaiMoment > tglKembaliJadwal) {
+      // Calculate penalty if late - gunakan WIB moments
+      if (tglSelesaiMoment > tglKembaliMoment) {
         statusSelesai = this.STATUS_SELESAI.TERLAMBAT;
 
         if (sewa.satuan_durasi === 'jam') {
-          // Calculate delay in minutes for hourly rentals
           keterlambatanMenit = Math.ceil(
-            tglSelesaiMoment.diff(tglKembaliJadwal, 'minutes', true),
+            tglSelesaiMoment.diff(tglKembaliMoment, 'minutes', true),
           );
           const hargaPerJam = Math.ceil(sewa.motor.harga / 24);
           denda = Math.ceil((keterlambatanMenit / 60) * hargaPerJam * 0.5);
         } else {
-          // Calculate delay in hours for daily rentals
           const jamTerlambat = tglSelesaiMoment.diff(
-            tglKembaliJadwal,
+            tglKembaliMoment,
             'hours',
             true,
           );
-          // Denda dihitung per jam keterlambatan
           const hargaPerJam = Math.ceil(sewa.motor.harga / 24);
           denda = Math.ceil(jamTerlambat * hargaPerJam * 0.5);
         }
       }
 
-      // Create history record menggunakan RAW SQL
-      await prisma.$executeRaw`
-        INSERT INTO histories (
-          sewa_id, tgl_selesai, status_selesai, harga, denda, catatan, keterlambatan_menit, created_at, updated_at
-        ) VALUES (
-          ${id}, 
-          ${tglSelesaiDB}, 
-          ${statusSelesai}, 
-          ${sewa.total_harga}, 
-          ${denda}, 
-          ${selesaiSewaDto.catatan || null}, 
-          ${keterlambatanMenit},
-          NOW(), 
-          NOW()
-        )
-      `;
+      // Create history record dengan UTC
+      const history = await prisma.history.create({
+        data: {
+          sewa_id: id,
+          tgl_selesai: tglSelesaiUTC, // ✅ Stored as UTC
+          status_selesai: statusSelesai,
+          harga: sewa.total_harga,
+          denda: denda,
+          catatan: selesaiSewaDto.catatan,
+          keterlambatan_menit: keterlambatanMenit,
+        },
+      });
 
-      // Update sewa status to completed menggunakan RAW SQL
-      await prisma.$executeRaw`
-        UPDATE sewas 
-        SET status = 'selesai', status_notifikasi = 'selesai', updated_at = NOW()
-        WHERE id = ${id}
-      `;
+      // Update sewa status to completed
+      await prisma.sewa.update({
+        where: { id },
+        data: {
+          status: 'selesai',
+          status_notifikasi: 'selesai',
+        },
+      });
 
       // Update motor status back to available
       await prisma.motor.update({
@@ -591,13 +560,11 @@ export class SewaService {
         data: { status: 'tersedia' },
       });
 
-      // Get the created history
-      const history = await prisma.history.findFirst({
-        where: { sewa_id: id },
-        orderBy: { id: 'desc' },
-      });
-
-      return history;
+      // ✅ Return sebagai WIB
+      return {
+        ...history,
+        tgl_selesai: this.convertUTCToWIB(history.tgl_selesai),
+      };
     });
   }
 
@@ -612,7 +579,6 @@ export class SewaService {
         throw new NotFoundException('Sewa tidak ditemukan');
       }
 
-      // If sewa is active, set motor back to available
       if (sewa.status !== this.STATUS.SELESAI) {
         await prisma.motor.update({
           where: { id: sewa.motor_id },
@@ -620,14 +586,12 @@ export class SewaService {
         });
       }
 
-      // Delete related histories first (if any)
       if (sewa.histories.length > 0) {
         await prisma.history.deleteMany({
           where: { sewa_id: id },
         });
       }
 
-      // Delete sewa
       await prisma.sewa.delete({
         where: { id },
       });
@@ -636,9 +600,7 @@ export class SewaService {
     });
   }
 
-  // ✅ Method untuk update catatan
   async updateNotes(id: number, catatan_tambahan: string) {
-    // Cek apakah sewa exists
     const sewa = await this.prisma.sewa.findUnique({
       where: { id },
     });
@@ -647,16 +609,9 @@ export class SewaService {
       throw new NotFoundException('Sewa tidak ditemukan');
     }
 
-    // Update catatan tambahan menggunakan RAW SQL
-    await this.prisma.$executeRaw`
-      UPDATE sewas 
-      SET catatan_tambahan = ${catatan_tambahan}, updated_at = NOW()
-      WHERE id = ${id}
-    `;
-
-    // Get updated sewa
-    return this.prisma.sewa.findUnique({
+    const updatedSewa = await this.prisma.sewa.update({
       where: { id },
+      data: { catatan_tambahan },
       include: {
         motor: {
           select: {
@@ -681,11 +636,17 @@ export class SewaService {
         },
       },
     });
+
+    // ✅ Return sebagai WIB
+    return {
+      ...updatedSewa,
+      tgl_sewa: this.convertUTCToWIB(updatedSewa.tgl_sewa),
+      tgl_kembali: this.convertUTCToWIB(updatedSewa.tgl_kembali),
+    };
   }
 
-  // ✅ Method untuk mendapatkan semua sewa termasuk yang selesai
   async findAllWithHistory() {
-    return this.prisma.sewa.findMany({
+    const sewas = await this.prisma.sewa.findMany({
       include: {
         motor: {
           select: {
@@ -716,5 +677,20 @@ export class SewaService {
       },
       orderBy: { created_at: 'desc' },
     });
+
+    // ✅ Convert semua UTC dates ke WIB untuk response
+    return sewas.map((sewa) => ({
+      ...sewa,
+      tgl_sewa: this.convertUTCToWIB(sewa.tgl_sewa),
+      tgl_kembali: this.convertUTCToWIB(sewa.tgl_kembali),
+      created_at: this.convertUTCToWIB(sewa.created_at),
+      updated_at: this.convertUTCToWIB(sewa.updated_at),
+      histories: sewa.histories.map((history) => ({
+        ...history,
+        tgl_selesai: this.convertUTCToWIB(history.tgl_selesai),
+        created_at: this.convertUTCToWIB(history.created_at),
+        updated_at: this.convertUTCToWIB(history.updated_at),
+      })),
+    }));
   }
 }
