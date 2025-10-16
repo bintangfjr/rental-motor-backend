@@ -3,6 +3,7 @@ import {
   BadRequestException,
   NotFoundException,
   InternalServerErrorException,
+  forwardRef,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { CreateSewaDto } from './dto/create-sewa.dto';
@@ -458,7 +459,7 @@ export class SewaService {
             satuan_durasi: createSewaDto.satuan_durasi,
             status_notifikasi: 'menunggu',
             additional_costs:
-              additionalCosts.length > 0 ? additionalCosts : null,
+              additionalCosts.length > 0 ? (additionalCosts as any) : null, // FIX: Type casting
             catatan_tambahan: createSewaDto.catatan_tambahan,
           },
           include: {
@@ -556,7 +557,7 @@ export class SewaService {
           const baseHarga = updateData.total_harga || sewa.total_harga;
           updateData.total_harga = Math.max(0, baseHarga + netAdditionalCosts);
           updateData.additional_costs =
-            additionalCosts.length > 0 ? additionalCosts : null;
+            additionalCosts.length > 0 ? (additionalCosts as any) : null; // FIX: Type casting
         }
 
         // Handle other fields
