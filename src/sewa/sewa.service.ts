@@ -256,6 +256,95 @@ export class SewaService {
     return additionalCosts as any;
   }
 
+  // ✅ METHOD: Find All Sewa (Basic)
+  async findAll() {
+    try {
+      const sewas = await this.prisma.sewa.findMany({
+        include: {
+          motor: {
+            select: {
+              id: true,
+              plat_nomor: true,
+              merk: true,
+              model: true,
+            },
+          },
+          penyewa: {
+            select: {
+              id: true,
+              nama: true,
+              no_whatsapp: true,
+            },
+          },
+          admin: {
+            select: {
+              id: true,
+              nama_lengkap: true,
+            },
+          },
+        },
+        orderBy: { created_at: 'desc' },
+      });
+
+      return sewas;
+    } catch (error) {
+      console.error('Error in findAll:', error);
+      throw new InternalServerErrorException('Gagal mengambil data sewa');
+    }
+  }
+
+  // ✅ METHOD: Find One Sewa by ID
+  async findOne(id: number) {
+    try {
+      const sewa = await this.prisma.sewa.findUnique({
+        where: { id },
+        include: {
+          motor: {
+            select: {
+              id: true,
+              plat_nomor: true,
+              merk: true,
+              model: true,
+              harga: true,
+            },
+          },
+          penyewa: {
+            select: {
+              id: true,
+              nama: true,
+              no_whatsapp: true,
+              alamat: true,
+            },
+          },
+          admin: {
+            select: {
+              id: true,
+              nama_lengkap: true,
+            },
+          },
+          histories: {
+            orderBy: {
+              created_at: 'desc',
+            },
+          },
+        },
+      });
+
+      if (!sewa) {
+        throw new NotFoundException(`Sewa dengan ID ${id} tidak ditemukan`);
+      }
+
+      return sewa;
+    } catch (error) {
+      console.error(`Error in findOne sewa ID ${id}:`, error);
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      throw new InternalServerErrorException('Gagal mengambil data sewa');
+    }
+  }
+
+  // ✅ METHOD: Create Sewa
   async create(createSewaDto: CreateSewaDto, adminId: number) {
     return this.prisma.$transaction(async (prisma) => {
       try {
@@ -408,6 +497,7 @@ export class SewaService {
     });
   }
 
+  // ✅ METHOD: Update Sewa
   async update(id: number, updateSewaDto: UpdateSewaDto) {
     return this.prisma.$transaction(async (prisma) => {
       try {
@@ -521,6 +611,7 @@ export class SewaService {
     });
   }
 
+  // ✅ METHOD: Selesai Sewa
   async selesai(id: number, selesaiSewaDto: SelesaiSewaDto) {
     return this.prisma.$transaction(async (prisma) => {
       try {
@@ -645,6 +736,7 @@ export class SewaService {
     });
   }
 
+  // ✅ METHOD: Remove Sewa
   async remove(id: number) {
     return this.prisma.$transaction(async (prisma) => {
       try {
@@ -694,6 +786,7 @@ export class SewaService {
     });
   }
 
+  // ✅ METHOD: Update Notes
   async updateNotes(id: number, catatan_tambahan: string) {
     try {
       console.log(`=== 📝 UPDATE NOTES SEWA ID ${id} ===`);
@@ -748,6 +841,7 @@ export class SewaService {
     }
   }
 
+  // ✅ METHOD: Find All Sewa with History
   async findAllWithHistory() {
     try {
       const sewas = await this.prisma.sewa.findMany({
@@ -787,6 +881,89 @@ export class SewaService {
       console.error('Error in findAllWithHistory:', error);
       throw new InternalServerErrorException(
         'Gagal mengambil data sewa dengan history',
+      );
+    }
+  }
+
+  // ✅ METHOD: Find Active Sewa Only
+  async findActive() {
+    try {
+      const sewas = await this.prisma.sewa.findMany({
+        where: { status: this.STATUS.AKTIF },
+        include: {
+          motor: {
+            select: {
+              id: true,
+              plat_nomor: true,
+              merk: true,
+              model: true,
+            },
+          },
+          penyewa: {
+            select: {
+              id: true,
+              nama: true,
+              no_whatsapp: true,
+            },
+          },
+          admin: {
+            select: {
+              id: true,
+              nama_lengkap: true,
+            },
+          },
+        },
+        orderBy: { created_at: 'desc' },
+      });
+
+      return sewas;
+    } catch (error) {
+      console.error('Error in findActive:', error);
+      throw new InternalServerErrorException('Gagal mengambil data sewa aktif');
+    }
+  }
+
+  // ✅ METHOD: Find Completed Sewa Only
+  async findCompleted() {
+    try {
+      const sewas = await this.prisma.sewa.findMany({
+        where: { status: this.STATUS.SELESAI },
+        include: {
+          motor: {
+            select: {
+              id: true,
+              plat_nomor: true,
+              merk: true,
+              model: true,
+            },
+          },
+          penyewa: {
+            select: {
+              id: true,
+              nama: true,
+              no_whatsapp: true,
+            },
+          },
+          admin: {
+            select: {
+              id: true,
+              nama_lengkap: true,
+            },
+          },
+          histories: {
+            orderBy: {
+              created_at: 'desc',
+            },
+          },
+        },
+        orderBy: { created_at: 'desc' },
+      });
+
+      return sewas;
+    } catch (error) {
+      console.error('Error in findCompleted:', error);
+      throw new InternalServerErrorException(
+        'Gagal mengambil data sewa selesai',
       );
     }
   }
