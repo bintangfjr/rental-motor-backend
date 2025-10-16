@@ -3,7 +3,6 @@ import {
   BadRequestException,
   NotFoundException,
   InternalServerErrorException,
-  forwardRef,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { CreateSewaDto } from './dto/create-sewa.dto';
@@ -103,22 +102,26 @@ export class SewaService {
     return moment(date).tz(this.TIMEZONE);
   }
 
-  // ✅ METHOD: Validasi tanggal dengan STRICT RULES
+  // ✅ METHOD: Validasi tanggal dengan RELAXED RULES (FIXED)
   private validateDates(tglSewa: Date, tglKembali: Date): void {
     const tglSewaMoment = this.getMomentWIB(tglSewa);
     const tglKembaliMoment = this.getMomentWIB(tglKembali);
     const sekarangMoment = moment().tz(this.TIMEZONE);
 
-    console.log('📅 STRICT Date Validation:', {
+    console.log('📅 RELAXED Date Validation:', {
       sekarang: sekarangMoment.format('DD/MM/YYYY HH:mm:ss'),
       tgl_sewa: tglSewaMoment.format('DD/MM/YYYY HH:mm:ss'),
       tgl_kembali: tglKembaliMoment.format('DD/MM/YYYY HH:mm:ss'),
+      diff_sekarang_tgl_sewa: tglSewaMoment.diff(sekarangMoment, 'minutes'),
       is_tgl_sewa_valid: tglSewaMoment.isSameOrAfter(sekarangMoment),
       is_tgl_kembali_valid: tglKembaliMoment.isAfter(tglSewaMoment),
     });
 
-    // 🚨 STRICT VALIDATION: Tanggal sewa harus sama atau setelah waktu sekarang
-    if (tglSewaMoment.isBefore(sekarangMoment)) {
+    // 🚨 RELAXED VALIDATION: Beri toleransi 5 menit untuk perbedaan waktu
+    const diffMenit = tglSewaMoment.diff(sekarangMoment, 'minutes');
+
+    if (diffMenit < -5) {
+      // Jika lebih dari 5 menit di masa lalu
       throw new BadRequestException(
         `Tanggal sewa tidak boleh di masa lalu. Sekarang: ${sekarangMoment.format('DD/MM/YYYY HH:mm')}, Input: ${tglSewaMoment.format('DD/MM/YYYY HH:mm')}`,
       );
@@ -151,10 +154,12 @@ export class SewaService {
       existing_tgl_sewa: tglSewaMoment.format('DD/MM/YYYY HH:mm:ss'),
       new_tgl_kembali: tglKembaliMoment.format('DD/MM/YYYY HH:mm:ss'),
       sekarang: sekarangMoment.format('DD/MM/YYYY HH:mm:ss'),
+      diff_minutes: tglKembaliMoment.diff(sekarangMoment, 'minutes'),
     });
 
-    // Untuk update, tanggal kembali harus di masa depan
-    if (tglKembaliMoment.isBefore(sekarangMoment)) {
+    // Untuk update, beri toleransi 5 menit juga
+    const diffMenit = tglKembaliMoment.diff(sekarangMoment, 'minutes');
+    if (diffMenit < -5) {
       throw new BadRequestException('Tanggal kembali harus di masa depan');
     }
 
@@ -258,6 +263,18 @@ export class SewaService {
     return jaminan;
   }
 
+  // ✅ METHOD: Safe type conversion untuk additional_costs
+  private convertAdditionalCostsForPrisma(
+    additionalCosts: AdditionalCostItem[] | null | undefined,
+  ) {
+    if (!additionalCosts || additionalCosts.length === 0) {
+      return null;
+    }
+
+    // Konversi ke format yang compatible dengan Prisma JSON
+    return additionalCosts as any;
+  }
+
   async findAll() {
     try {
       const sewas = await this.prisma.sewa.findMany({
@@ -348,10 +365,14 @@ export class SewaService {
     return this.prisma.$transaction(async (prisma) => {
       try {
         console.log('=== 🚀 CREATE SEWA PROCESS ===');
-        console.log('📝 Input data:', createSewaDto);
+        console.log('📝 Input data:', JSON.stringify(createSewaDto, null, 2));
         console.log(
           '🕐 Current server time WIB:',
           moment().tz(this.TIMEZONE).format('DD/MM/YYYY HH:mm:ss'),
+        );
+        console.log(
+          '🕐 Current server time UTC:',
+          moment().utc().format('DD/MM/YYYY HH:mm:ss'),
         );
 
         // 1. Validasi Motor
@@ -389,8 +410,8 @@ export class SewaService {
           throw new BadRequestException('Penyewa memiliki sewa aktif');
         }
 
-        // 3. Parse dan Validasi Dates dengan STRICT RULES
-        console.log('=== 🕐 STRICT DATE PROCESSING ===');
+        // 3. Parse dan Validasi Dates dengan DETAILED DEBUG
+        console.log('=== 🕐 DETAILED DATE PROCESSING ===');
 
         const tglSewaDate = this.parseDateInput(
           createSewaDto.tgl_sewa,
@@ -401,17 +422,29 @@ export class SewaService {
           'Tanggal kembali',
         );
 
-        console.log('🔍 Date Comparison:', {
+        // Debug waktu secara detail
+        const sekarang = new Date();
+        const tglSewaMoment = this.getMomentWIB(tglSewaDate);
+        const sekarangMoment = moment().tz(this.TIMEZONE);
+
+        console.log('🔍 DETAILED Date Comparison:', {
           input_tgl_sewa: createSewaDto.tgl_sewa,
           parsed_tgl_sewa: tglSewaDate,
+          parsed_tgl_sewa_iso: tglSewaDate.toISOString(),
           parsed_tgl_sewa_locale: tglSewaDate.toLocaleString('id-ID'),
           input_tgl_kembali: createSewaDto.tgl_kembali,
           parsed_tgl_kembali: tglKembaliDate,
+          parsed_tgl_kembali_iso: tglKembaliDate.toISOString(),
           parsed_tgl_kembali_locale: tglKembaliDate.toLocaleString('id-ID'),
-          server_time: new Date().toLocaleString('id-ID'),
+          server_time: sekarang.toLocaleString('id-ID'),
+          server_time_iso: sekarang.toISOString(),
+          server_time_wib: sekarangMoment.format('DD/MM/YYYY HH:mm:ss'),
+          diff_minutes: tglSewaMoment.diff(sekarangMoment, 'minutes'),
+          is_future: tglSewaMoment.isAfter(sekarangMoment),
+          is_same: tglSewaMoment.isSame(sekarangMoment),
         });
 
-        // 🚨 STRICT VALIDATION - tidak boleh masa lalu
+        // 🚨 RELAXED VALIDATION - beri toleransi
         this.validateDates(tglSewaDate, tglKembaliDate);
 
         // 4. Calculation Duration & Price
@@ -459,7 +492,7 @@ export class SewaService {
             satuan_durasi: createSewaDto.satuan_durasi,
             status_notifikasi: 'menunggu',
             additional_costs:
-              additionalCosts.length > 0 ? (additionalCosts as any) : null, // FIX: Type casting
+              this.convertAdditionalCostsForPrisma(additionalCosts),
             catatan_tambahan: createSewaDto.catatan_tambahan,
           },
           include: {
@@ -488,7 +521,7 @@ export class SewaService {
 
         return sewa;
       } catch (error) {
-        console.error('Error in create sewa:', error);
+        console.error('❌ Error in create sewa:', error);
         if (
           error instanceof BadRequestException ||
           error instanceof NotFoundException
@@ -557,7 +590,7 @@ export class SewaService {
           const baseHarga = updateData.total_harga || sewa.total_harga;
           updateData.total_harga = Math.max(0, baseHarga + netAdditionalCosts);
           updateData.additional_costs =
-            additionalCosts.length > 0 ? (additionalCosts as any) : null; // FIX: Type casting
+            this.convertAdditionalCostsForPrisma(additionalCosts);
         }
 
         // Handle other fields
