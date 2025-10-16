@@ -19,7 +19,7 @@ function parseDateForValidation(dateString: string): moment.Moment {
         .tz(dateString, 'YYYY-MM-DD', 'Asia/Jakarta')
         .startOf('day');
     } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(dateString)) {
-      // 🚨 FIX: Pertahankan timezone WIB
+      // ✅ SIMPLE FORMAT: "2024-01-15T10:30" - Treat as WIB
       parsedDate = moment.tz(dateString, 'YYYY-MM-DDTHH:mm', 'Asia/Jakarta');
     } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.*/.test(dateString)) {
       parsedDate = moment(dateString).tz('Asia/Jakarta');
@@ -76,7 +76,7 @@ export class IsValidDateTimeFormatConstraint
   }
 }
 
-// 🚨 STRICT VALIDATOR: Tanggal sewa tidak boleh di masa lalu (0 toleransi)
+// ✅ VALIDATOR: Tanggal sewa tidak boleh di masa lalu (untuk CREATE)
 @ValidatorConstraint({ name: 'isRentalDateNotInPast', async: false })
 export class IsRentalDateNotInPastConstraint
   implements ValidatorConstraintInterface
@@ -85,9 +85,7 @@ export class IsRentalDateNotInPastConstraint
     if (!tglSewa) return true;
 
     try {
-      console.log(
-        '🕐 [STRICT Rental Date Validator] Checking if rental date is not in past:',
-      );
+      console.log('🕐 [Rental Date Validator] Checking rental date:');
       console.log('  - tgl_sewa:', tglSewa);
 
       const tglSewaMoment = parseDateForValidation(tglSewa);
@@ -102,7 +100,7 @@ export class IsRentalDateNotInPastConstraint
         sekarangMoment.format('DD/MM/YYYY HH:mm:ss'),
       );
 
-      // 🚨 STRICT: 0 TOLERANSI - harus sama atau setelah waktu sekarang
+      // Untuk create, harus sama atau setelah waktu sekarang
       const isValid = tglSewaMoment.isSameOrAfter(sekarangMoment);
       console.log('  - result:', isValid);
 
@@ -118,7 +116,7 @@ export class IsRentalDateNotInPastConstraint
   }
 }
 
-// Validator untuk memastikan tanggal kembali setelah tanggal sewa
+// ✅ VALIDATOR: Tanggal kembali harus setelah tanggal sewa (untuk CREATE)
 @ValidatorConstraint({ name: 'isReturnDateAfterRentalDate', async: false })
 export class IsReturnDateAfterRentalDateConstraint
   implements ValidatorConstraintInterface
@@ -132,9 +130,7 @@ export class IsReturnDateAfterRentalDateConstraint
 
       if (!tglSewa) return true;
 
-      console.log(
-        '🕐 [Return Date Validator] Comparing rental and return dates:',
-      );
+      console.log('🕐 [Return Date Validator] Comparing dates:');
       console.log('  - tgl_sewa:', tglSewa);
       console.log('  - tgl_kembali:', tglKembali);
 
@@ -149,9 +145,11 @@ export class IsReturnDateAfterRentalDateConstraint
         '  - tgl_kembali (WIB):',
         tglKembaliMoment.format('DD/MM/YYYY HH:mm:ss'),
       );
-      console.log('  - result:', tglKembaliMoment.isAfter(tglSewaMoment));
 
-      return tglKembaliMoment.isAfter(tglSewaMoment);
+      const isValid = tglKembaliMoment.isAfter(tglSewaMoment);
+      console.log('  - result:', isValid);
+
+      return isValid;
     } catch (error) {
       console.error('❌ [Return Date Validator] Error:', error);
       return false;
@@ -163,12 +161,12 @@ export class IsReturnDateAfterRentalDateConstraint
   }
 }
 
-// Validator untuk UpdateSewaDto - tanggal kembali harus di masa depan
+// ✅ FIXED: Validator untuk UpdateSewaDto - lebih flexible
 @ValidatorConstraint({
-  name: 'isReturnDateAfterExistingRentalDate',
+  name: 'isReturnDateValidForUpdate',
   async: false,
 })
-export class IsReturnDateAfterExistingRentalDateConstraint
+export class IsReturnDateValidForUpdateConstraint
   implements ValidatorConstraintInterface
 {
   validate(tglKembali: string, args: ValidationArguments) {
@@ -189,10 +187,13 @@ export class IsReturnDateAfterExistingRentalDateConstraint
         '  - sekarang (WIB):',
         sekarangMoment.format('DD/MM/YYYY HH:mm:ss'),
       );
-      console.log('  - result:', tglKembaliMoment.isAfter(sekarangMoment));
 
-      // Untuk update, pastikan tanggal kembali tidak di masa lalu
-      return tglKembaliMoment.isAfter(sekarangMoment);
+      // ✅ FIXED: Untuk update, boleh sama atau setelah waktu sekarang
+      // Tidak perlu strict harus di masa depan
+      const isValid = tglKembaliMoment.isSameOrAfter(sekarangMoment);
+      console.log('  - result:', isValid);
+
+      return isValid;
     } catch (error) {
       console.error('❌ [Update Return Date Validator] Error:', error);
       return false;
@@ -200,11 +201,11 @@ export class IsReturnDateAfterExistingRentalDateConstraint
   }
 
   defaultMessage() {
-    return 'Tanggal kembali harus di masa depan';
+    return 'Tanggal kembali tidak boleh di masa lalu';
   }
 }
 
-// 🚨 STRICT VALIDATOR: Tanggal selesai tidak boleh di masa depan
+// ✅ VALIDATOR: Tanggal selesai tidak boleh di masa depan
 @ValidatorConstraint({ name: 'isCompletionDateNotInFuture', async: false })
 export class IsCompletionDateNotInFutureConstraint
   implements ValidatorConstraintInterface
@@ -213,9 +214,7 @@ export class IsCompletionDateNotInFutureConstraint
     if (!tglSelesai) return true;
 
     try {
-      console.log(
-        '🕐 [Completion Date Validator] Checking if completion date is not in future:',
-      );
+      console.log('🕐 [Completion Date Validator] Checking completion date:');
       console.log('  - tgl_selesai:', tglSelesai);
 
       const tglSelesaiMoment = parseDateForValidation(tglSelesai);
@@ -229,13 +228,11 @@ export class IsCompletionDateNotInFutureConstraint
         '  - sekarang (WIB):',
         sekarangMoment.format('DD/MM/YYYY HH:mm:ss'),
       );
-      console.log(
-        '  - result:',
-        tglSelesaiMoment.isSameOrBefore(sekarangMoment),
-      );
 
-      // Tanggal selesai tidak boleh di masa depan
-      return tglSelesaiMoment.isSameOrBefore(sekarangMoment);
+      const isValid = tglSelesaiMoment.isSameOrBefore(sekarangMoment);
+      console.log('  - result:', isValid);
+
+      return isValid;
     } catch (error) {
       console.error('❌ [Completion Date Validator] Error:', error);
       return false;

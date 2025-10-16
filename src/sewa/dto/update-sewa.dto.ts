@@ -15,7 +15,7 @@ import {
 import { Type } from 'class-transformer';
 import {
   IsValidDateTimeFormatConstraint,
-  IsReturnDateAfterExistingRentalDateConstraint,
+  IsReturnDateValidForUpdateConstraint, // ✅ GUNAKAN YANG BARU
 } from './custom-validators';
 
 export enum JaminanType {
@@ -55,8 +55,9 @@ export class UpdateSewaDto {
   @Validate(IsValidDateTimeFormatConstraint, {
     message: 'Format tanggal kembali harus YYYY-MM-DD atau YYYY-MM-DDTHH:mm',
   })
-  @Validate(IsReturnDateAfterExistingRentalDateConstraint, {
-    message: 'Tanggal kembali harus di masa depan',
+  @Validate(IsReturnDateValidForUpdateConstraint, {
+    // ✅ GUNAKAN YANG BARU
+    message: 'Tanggal kembali tidak boleh di masa lalu', // ✅ PERBAIKI PESAN
   })
   tgl_kembali?: string;
 
