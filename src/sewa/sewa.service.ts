@@ -8,7 +8,6 @@ import { PrismaService } from '../prisma.service';
 import { CreateSewaDto } from './dto/create-sewa.dto';
 import { UpdateSewaDto } from './dto/update-sewa.dto';
 import { SelesaiSewaDto } from './dto/selesai-sewa.dto';
-import * as moment from 'moment-timezone';
 
 interface AdditionalCostItem {
   description: string;
@@ -20,152 +19,60 @@ interface AdditionalCostItem {
 export class SewaService {
   constructor(private prisma: PrismaService) {}
 
-  private readonly TIMEZONE = 'Asia/Jakarta';
-  private readonly STATUS = {
-    AKTIF: 'aktif',
-    SELESAI: 'selesai',
-    DIBATALKAN: 'dibatalkan',
-  };
-
-  private readonly STATUS_SELESAI = {
-    TEPAT_WAKTU: 'Tepat Waktu',
-    TERLAMBAT: 'Terlambat',
-  };
-
-  // ✅ METHOD: Parse semua format date ke Date object dengan WIB timezone
+  // ✅ METHOD: Simple date parsing - terima string ISO langsung
   private parseDateInput(dateString: string, fieldName: string): Date {
     if (!dateString) {
       throw new BadRequestException(`${fieldName} tidak boleh kosong`);
     }
 
-    console.log(`🔧 Parsing ${fieldName}:`, dateString);
+    const date = new Date(dateString);
 
-    try {
-      let parsedMoment: moment.Moment;
-
-      // Handle format frontend: "15/10/2025, 17.26"
-      if (/^\d{1,2}\/\d{1,2}\/\d{4}, \d{1,2}\.\d{2}$/.test(dateString)) {
-        const [datePart, timePart] = dateString.split(', ');
-        const [day, month, year] = datePart.split('/');
-        const [hour, minute] = timePart.split('.');
-
-        const isoFormat = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
-        parsedMoment = moment.tz(isoFormat, 'YYYY-MM-DDTHH:mm', this.TIMEZONE);
-      }
-      // Handle format ISO: "2025-10-15" atau "2025-10-15T17:26"
-      else if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
-        parsedMoment = moment
-          .tz(dateString, 'YYYY-MM-DD', this.TIMEZONE)
-          .startOf('day');
-      } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(dateString)) {
-        parsedMoment = moment.tz(dateString, 'YYYY-MM-DDTHH:mm', this.TIMEZONE);
-      } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.*/.test(dateString)) {
-        // Format ISO lengkap - convert ke WIB
-        parsedMoment = moment(dateString).tz(this.TIMEZONE);
-      } else {
-        // Fallback untuk format lain
-        parsedMoment = moment(dateString).tz(this.TIMEZONE);
-      }
-
-      if (!parsedMoment.isValid()) {
-        throw new BadRequestException(`${fieldName} tidak valid`);
-      }
-
-      // Return Date object dengan waktu WIB
-      const date = new Date(parsedMoment.format('YYYY-MM-DDTHH:mm:ss'));
-
-      console.log(`✅ ${fieldName} parsed:`, {
-        input: dateString,
-        output: date,
-        locale: date.toLocaleString('id-ID'),
-        iso: date.toISOString(),
-        timezone: this.TIMEZONE,
-        moment_wib: parsedMoment.format('DD/MM/YYYY HH:mm:ss'),
-      });
-
-      return date;
-    } catch (error) {
-      console.error(`❌ Error parsing ${fieldName}:`, error);
-      if (error instanceof BadRequestException) throw error;
-      throw new BadRequestException(`Format ${fieldName} tidak valid`);
+    if (isNaN(date.getTime())) {
+      throw new BadRequestException(`${fieldName} tidak valid`);
     }
-  }
 
-  // ✅ METHOD: Untuk calculation dengan moment WIB
-  private getMomentWIB(date: Date | string): moment.Moment {
-    if (typeof date === 'string') {
-      return moment.tz(date, this.TIMEZONE);
-    }
-    return moment(date).tz(this.TIMEZONE);
-  }
-
-  // ✅ METHOD: Validasi tanggal TANPA validasi masa lalu (FIXED)
-  private validateDates(tglSewa: Date, tglKembali: Date): void {
-    const tglSewaMoment = this.getMomentWIB(tglSewa);
-    const tglKembaliMoment = this.getMomentWIB(tglKembali);
-    const sekarangMoment = moment().tz(this.TIMEZONE);
-
-    console.log('📅 NO PAST VALIDATION Date Check:', {
-      sekarang: sekarangMoment.format('DD/MM/YYYY HH:mm:ss'),
-      tgl_sewa: tglSewaMoment.format('DD/MM/YYYY HH:mm:ss'),
-      tgl_kembali: tglKembaliMoment.format('DD/MM/YYYY HH:mm:ss'),
-      diff_minutes_sewa: tglSewaMoment.diff(sekarangMoment, 'minutes'),
-      diff_minutes_kembali: tglKembaliMoment.diff(sekarangMoment, 'minutes'),
+    console.log(`✅ ${fieldName} parsed:`, {
+      input: dateString,
+      output: date,
+      iso: date.toISOString(),
+      locale: date.toLocaleString('id-ID'),
     });
 
-    // 🚨 HAPUS VALIDASI MASA LALU - biarkan user input kapan saja
-    // Hanya validasi bahwa tanggal kembali setelah tanggal sewa
-    if (tglKembaliMoment.isSameOrBefore(tglSewaMoment)) {
+    return date;
+  }
+
+  // ✅ METHOD: Simple date validation
+  private validateDates(tglSewa: Date, tglKembali: Date): void {
+    if (tglKembali <= tglSewa) {
       throw new BadRequestException(
         'Tanggal kembali harus setelah tanggal sewa',
       );
     }
 
-    // Validasi durasi minimal 1 jam untuk satuan jam
-    const diffMinutes = tglKembaliMoment.diff(tglSewaMoment, 'minutes');
-    if (diffMinutes < 60) {
+    // Minimal 1 jam
+    const diffMs = tglKembali.getTime() - tglSewa.getTime();
+    const diffHours = diffMs / (1000 * 60 * 60);
+
+    if (diffHours < 1) {
       throw new BadRequestException('Durasi sewa minimal 1 jam');
     }
-
-    console.log('✅ Date validation passed - no past date restriction');
   }
 
-  // ✅ METHOD: Validasi untuk update (lebih longgar)
-  private validateUpdateDates(
-    existingTglSewa: Date,
-    newTglKembali: Date,
-  ): void {
-    const tglSewaMoment = this.getMomentWIB(existingTglSewa);
-    const tglKembaliMoment = this.getMomentWIB(newTglKembali);
-
-    console.log('📅 UPDATE Date Validation:', {
-      existing_tgl_sewa: tglSewaMoment.format('DD/MM/YYYY HH:mm:ss'),
-      new_tgl_kembali: tglKembaliMoment.format('DD/MM/YYYY HH:mm:ss'),
-    });
-
-    // Hanya validasi bahwa tanggal kembali setelah tanggal sewa
-    if (tglKembaliMoment.isSameOrBefore(tglSewaMoment)) {
-      throw new BadRequestException(
-        'Tanggal kembali harus setelah tanggal sewa',
-      );
-    }
-  }
-
-  // ✅ METHOD: Hitung durasi dan harga
+  // ✅ METHOD: Calculate duration & price
   private calculateDurationAndPrice(
     tglSewa: Date,
     tglKembali: Date,
     satuanDurasi: string,
     hargaMotor: number,
   ): { durasi: number; baseHarga: number } {
-    const tglSewaMoment = this.getMomentWIB(tglSewa);
-    const tglKembaliMoment = this.getMomentWIB(tglKembali);
+    const diffMs = tglKembali.getTime() - tglSewa.getTime();
+    const diffHours = diffMs / (1000 * 60 * 60);
 
     let durasi: number;
     let baseHarga: number;
 
     if (satuanDurasi === 'jam') {
-      durasi = Math.ceil(tglKembaliMoment.diff(tglSewaMoment, 'hours', true));
+      durasi = Math.ceil(diffHours);
       baseHarga = Math.ceil((hargaMotor / 24) * durasi);
 
       // Minimal 1 jam
@@ -174,14 +81,12 @@ export class SewaService {
         baseHarga = Math.ceil(hargaMotor / 24);
       }
     } else {
-      const diffInHours = tglKembaliMoment.diff(tglSewaMoment, 'hours', true);
-
-      // Minimal 1 hari
-      if (diffInHours <= 24) {
+      // Untuk harian, minimal 1 hari
+      if (diffHours <= 24) {
         durasi = 1;
         baseHarga = hargaMotor;
       } else {
-        durasi = Math.ceil(diffInHours / 24);
+        durasi = Math.ceil(diffHours / 24);
         baseHarga = hargaMotor * durasi;
       }
     }
@@ -191,14 +96,13 @@ export class SewaService {
       durasi,
       baseHarga,
       hargaMotor,
-      tgl_sewa: tglSewaMoment.format('DD/MM/YYYY HH:mm:ss'),
-      tgl_kembali: tglKembaliMoment.format('DD/MM/YYYY HH:mm:ss'),
-      diff_hours: tglKembaliMoment.diff(tglSewaMoment, 'hours', true),
+      diff_hours: diffHours,
     });
 
     return { durasi, baseHarga };
   }
 
+  // ✅ METHOD: Calculate additional costs
   private calculateAdditionalCostsTotals(
     additionalCosts: AdditionalCostItem[],
   ) {
@@ -217,13 +121,6 @@ export class SewaService {
 
     const netAdditionalCosts = totalAdditional - totalDiscount;
 
-    console.log('📊 Additional costs calculation:', {
-      totalDiscount,
-      totalAdditional,
-      netAdditionalCosts,
-      items: additionalCosts?.length || 0,
-    });
-
     return {
       totalDiscount,
       totalAdditional,
@@ -231,7 +128,7 @@ export class SewaService {
     };
   }
 
-  // ✅ METHOD: Konversi jaminan
+  // ✅ METHOD: Convert jaminan to string
   private convertJaminanToString(
     jaminan: string[] | string | undefined,
   ): string {
@@ -244,19 +141,128 @@ export class SewaService {
     return jaminan;
   }
 
-  // ✅ METHOD: Safe type conversion untuk additional_costs
-  private convertAdditionalCostsForPrisma(
-    additionalCosts: AdditionalCostItem[] | null | undefined,
-  ) {
-    if (!additionalCosts || additionalCosts.length === 0) {
-      return null;
-    }
+  // ✅ CREATE - Simplified
+  async create(createSewaDto: CreateSewaDto, adminId: number) {
+    return this.prisma.$transaction(async (prisma) => {
+      try {
+        console.log('=== 🚀 CREATE SEWA PROCESS ===');
 
-    // Konversi ke format yang compatible dengan Prisma JSON
-    return additionalCosts as any;
+        // 1. Validasi Motor
+        const motor = await prisma.motor.findUnique({
+          where: { id: createSewaDto.motor_id },
+        });
+
+        if (!motor) {
+          throw new NotFoundException('Motor tidak ditemukan');
+        }
+
+        if (motor.status !== 'tersedia') {
+          throw new BadRequestException('Motor tidak tersedia untuk disewa');
+        }
+
+        // 2. Validasi Penyewa
+        const penyewa = await prisma.penyewa.findUnique({
+          where: { id: createSewaDto.penyewa_id },
+          include: {
+            sewas: {
+              where: { status: 'aktif' },
+            },
+          },
+        });
+
+        if (!penyewa) {
+          throw new NotFoundException('Penyewa tidak ditemukan');
+        }
+
+        if (penyewa.is_blacklisted) {
+          throw new BadRequestException('Penyewa dalam daftar hitam');
+        }
+
+        if (penyewa.sewas.length > 0) {
+          throw new BadRequestException('Penyewa memiliki sewa aktif');
+        }
+
+        // 3. Parse Dates - SIMPLE PARSING
+        const tglSewaDate = this.parseDateInput(
+          createSewaDto.tgl_sewa,
+          'Tanggal sewa',
+        );
+        const tglKembaliDate = this.parseDateInput(
+          createSewaDto.tgl_kembali,
+          'Tanggal kembali',
+        );
+
+        // 4. Validasi Dates
+        this.validateDates(tglSewaDate, tglKembaliDate);
+
+        // 5. Calculation Duration & Price
+        const { durasi, baseHarga } = this.calculateDurationAndPrice(
+          tglSewaDate,
+          tglKembaliDate,
+          createSewaDto.satuan_durasi,
+          motor.harga,
+        );
+
+        // 6. Additional Costs
+        const additionalCosts = createSewaDto.additional_costs || [];
+        const { netAdditionalCosts } =
+          this.calculateAdditionalCostsTotals(additionalCosts);
+        const finalTotalHarga = Math.max(0, baseHarga + netAdditionalCosts);
+
+        // 7. Create Sewa
+        const sewa = await prisma.sewa.create({
+          data: {
+            motor_id: createSewaDto.motor_id,
+            penyewa_id: createSewaDto.penyewa_id,
+            admin_id: adminId,
+            status: 'aktif',
+            jaminan: this.convertJaminanToString(createSewaDto.jaminan),
+            pembayaran: createSewaDto.pembayaran,
+            durasi_sewa: durasi,
+            tgl_sewa: tglSewaDate,
+            tgl_kembali: tglKembaliDate,
+            total_harga: finalTotalHarga,
+            satuan_durasi: createSewaDto.satuan_durasi,
+            status_notifikasi: 'menunggu',
+            additional_costs:
+              additionalCosts.length > 0 ? (additionalCosts as any) : null,
+            catatan_tambahan: createSewaDto.catatan_tambahan,
+          },
+          include: {
+            motor: true,
+            penyewa: true,
+            admin: { select: { id: true, nama_lengkap: true } },
+          },
+        });
+
+        // 8. Update Motor Status
+        await prisma.motor.update({
+          where: { id: createSewaDto.motor_id },
+          data: { status: 'disewa' },
+        });
+
+        console.log('✅ Sewa created successfully:', {
+          id: sewa.id,
+          tgl_sewa: sewa.tgl_sewa,
+          tgl_kembali: sewa.tgl_kembali,
+          total_harga: sewa.total_harga,
+        });
+
+        return sewa;
+      } catch (error) {
+        console.error('❌ Error in create sewa:', error);
+        if (
+          error instanceof BadRequestException ||
+          error instanceof NotFoundException
+        ) {
+          throw error;
+        }
+        throw new BadRequestException('Gagal membuat sewa: ' + error.message);
+      }
+    });
   }
 
-  // ✅ METHOD: Find All Sewa (Basic)
+  // ✅ FIND ALL
   async findAll() {
     try {
       const sewas = await this.prisma.sewa.findMany({
@@ -293,7 +299,7 @@ export class SewaService {
     }
   }
 
-  // ✅ METHOD: Find One Sewa by ID
+  // ✅ FIND ONE
   async findOne(id: number) {
     try {
       const sewa = await this.prisma.sewa.findUnique({
@@ -344,160 +350,7 @@ export class SewaService {
     }
   }
 
-  // ✅ METHOD: Create Sewa
-  async create(createSewaDto: CreateSewaDto, adminId: number) {
-    return this.prisma.$transaction(async (prisma) => {
-      try {
-        console.log('=== 🚀 CREATE SEWA PROCESS ===');
-        console.log('📝 Input data:', JSON.stringify(createSewaDto, null, 2));
-        console.log(
-          '🕐 Current server time WIB:',
-          moment().tz(this.TIMEZONE).format('DD/MM/YYYY HH:mm:ss'),
-        );
-
-        // 1. Validasi Motor
-        const motor = await prisma.motor.findUnique({
-          where: { id: createSewaDto.motor_id },
-        });
-
-        if (!motor) {
-          throw new NotFoundException('Motor tidak ditemukan');
-        }
-
-        if (motor.status !== 'tersedia') {
-          throw new BadRequestException('Motor tidak tersedia untuk disewa');
-        }
-
-        // 2. Validasi Penyewa
-        const penyewa = await prisma.penyewa.findUnique({
-          where: { id: createSewaDto.penyewa_id },
-          include: {
-            sewas: {
-              where: { status: this.STATUS.AKTIF },
-            },
-          },
-        });
-
-        if (!penyewa) {
-          throw new NotFoundException('Penyewa tidak ditemukan');
-        }
-
-        if (penyewa.is_blacklisted) {
-          throw new BadRequestException('Penyewa dalam daftar hitam');
-        }
-
-        if (penyewa.sewas.length > 0) {
-          throw new BadRequestException('Penyewa memiliki sewa aktif');
-        }
-
-        // 3. Parse dan Validasi Dates
-        console.log('=== 🕐 DATE PROCESSING ===');
-
-        const tglSewaDate = this.parseDateInput(
-          createSewaDto.tgl_sewa,
-          'Tanggal sewa',
-        );
-        const tglKembaliDate = this.parseDateInput(
-          createSewaDto.tgl_kembali,
-          'Tanggal kembali',
-        );
-
-        // Debug waktu secara detail
-        const tglSewaMoment = this.getMomentWIB(tglSewaDate);
-        const sekarangMoment = moment().tz(this.TIMEZONE);
-
-        console.log('🔍 DETAILED Date Info:', {
-          input_tgl_sewa: createSewaDto.tgl_sewa,
-          parsed_tgl_sewa: tglSewaDate,
-          parsed_tgl_sewa_locale: tglSewaDate.toLocaleString('id-ID'),
-          input_tgl_kembali: createSewaDto.tgl_kembali,
-          parsed_tgl_kembali: tglKembaliDate,
-          parsed_tgl_kembali_locale: tglKembaliDate.toLocaleString('id-ID'),
-          server_time_wib: sekarangMoment.format('DD/MM/YYYY HH:mm:ss'),
-          diff_minutes_sewa: tglSewaMoment.diff(sekarangMoment, 'minutes'),
-          is_past: tglSewaMoment.isBefore(sekarangMoment),
-        });
-
-        // 🚨 TIDAK ADA VALIDASI MASA LALU - biarkan user input kapan saja
-        this.validateDates(tglSewaDate, tglKembaliDate);
-
-        // 4. Calculation Duration & Price
-        const { durasi, baseHarga } = this.calculateDurationAndPrice(
-          tglSewaDate,
-          tglKembaliDate,
-          createSewaDto.satuan_durasi,
-          motor.harga,
-        );
-
-        // 5. Additional Costs
-        const additionalCosts = createSewaDto.additional_costs || [];
-        const { netAdditionalCosts } =
-          this.calculateAdditionalCostsTotals(additionalCosts);
-        const finalTotalHarga = Math.max(0, baseHarga + netAdditionalCosts);
-
-        // 6. Jaminan
-        const jaminanString = this.convertJaminanToString(
-          createSewaDto.jaminan,
-        );
-
-        // 7. Create Sewa
-        console.log('=== 💾 SAVING TO DATABASE ===');
-
-        const sewa = await prisma.sewa.create({
-          data: {
-            motor_id: createSewaDto.motor_id,
-            penyewa_id: createSewaDto.penyewa_id,
-            admin_id: adminId,
-            status: 'aktif',
-            jaminan: jaminanString,
-            pembayaran: createSewaDto.pembayaran,
-            durasi_sewa: durasi,
-            tgl_sewa: tglSewaDate,
-            tgl_kembali: tglKembaliDate,
-            total_harga: finalTotalHarga,
-            satuan_durasi: createSewaDto.satuan_durasi,
-            status_notifikasi: 'menunggu',
-            additional_costs:
-              this.convertAdditionalCostsForPrisma(additionalCosts),
-            catatan_tambahan: createSewaDto.catatan_tambahan,
-          },
-          include: {
-            motor: true,
-            penyewa: true,
-            admin: { select: { id: true, nama_lengkap: true } },
-          },
-        });
-
-        // 8. Update Motor Status
-        await prisma.motor.update({
-          where: { id: createSewaDto.motor_id },
-          data: { status: 'disewa' },
-        });
-
-        console.log('✅ Sewa created successfully:', {
-          id: sewa.id,
-          tgl_sewa: sewa.tgl_sewa,
-          tgl_sewa_locale: sewa.tgl_sewa.toLocaleString('id-ID'),
-          tgl_kembali: sewa.tgl_kembali,
-          tgl_kembali_locale: sewa.tgl_kembali.toLocaleString('id-ID'),
-          total_harga: sewa.total_harga,
-        });
-
-        return sewa;
-      } catch (error) {
-        console.error('❌ Error in create sewa:', error);
-        if (
-          error instanceof BadRequestException ||
-          error instanceof NotFoundException
-        ) {
-          throw error;
-        }
-        throw new BadRequestException('Gagal membuat sewa: ' + error.message);
-      }
-    });
-  }
-
-  // ✅ METHOD: Update Sewa
+  // ✅ UPDATE
   async update(id: number, updateSewaDto: UpdateSewaDto) {
     return this.prisma.$transaction(async (prisma) => {
       try {
@@ -512,7 +365,7 @@ export class SewaService {
           throw new NotFoundException('Sewa tidak ditemukan');
         }
 
-        if (sewa.status === this.STATUS.SELESAI) {
+        if (sewa.status === 'selesai') {
           throw new BadRequestException(
             'Tidak dapat mengubah sewa yang sudah selesai',
           );
@@ -522,15 +375,17 @@ export class SewaService {
 
         // Handle tgl_kembali update
         if (updateSewaDto.tgl_kembali) {
-          console.log('=== 🕐 UPDATE DATE PROCESSING ===');
-
           const tglKembaliDate = this.parseDateInput(
             updateSewaDto.tgl_kembali,
             'Tanggal kembali',
           );
 
-          // Validasi untuk update (lebih longgar)
-          this.validateUpdateDates(sewa.tgl_sewa, tglKembaliDate);
+          // Validasi tanggal kembali harus setelah tanggal sewa
+          if (tglKembaliDate <= sewa.tgl_sewa) {
+            throw new BadRequestException(
+              'Tanggal kembali harus setelah tanggal sewa',
+            );
+          }
 
           updateData.tgl_kembali = tglKembaliDate;
 
@@ -555,7 +410,7 @@ export class SewaService {
           const baseHarga = updateData.total_harga || sewa.total_harga;
           updateData.total_harga = Math.max(0, baseHarga + netAdditionalCosts);
           updateData.additional_costs =
-            this.convertAdditionalCostsForPrisma(additionalCosts);
+            additionalCosts.length > 0 ? (additionalCosts as any) : null;
         }
 
         // Handle other fields
@@ -577,8 +432,6 @@ export class SewaService {
           throw new BadRequestException('Tidak ada data yang diupdate');
         }
 
-        console.log('📝 Update data:', updateData);
-
         const updatedSewa = await prisma.sewa.update({
           where: { id },
           data: updateData,
@@ -589,11 +442,7 @@ export class SewaService {
           },
         });
 
-        console.log('✅ Sewa updated successfully:', {
-          id: updatedSewa.id,
-          tgl_kembali: updatedSewa.tgl_kembali,
-          tgl_kembali_locale: updatedSewa.tgl_kembali.toLocaleString('id-ID'),
-        });
+        console.log('✅ Sewa updated successfully:', { id: updatedSewa.id });
 
         return updatedSewa;
       } catch (error) {
@@ -611,7 +460,7 @@ export class SewaService {
     });
   }
 
-  // ✅ METHOD: Selesai Sewa
+  // ✅ SELESAI
   async selesai(id: number, selesaiSewaDto: SelesaiSewaDto) {
     return this.prisma.$transaction(async (prisma) => {
       try {
@@ -626,7 +475,7 @@ export class SewaService {
           throw new NotFoundException('Sewa tidak ditemukan');
         }
 
-        if (sewa.status === this.STATUS.SELESAI) {
+        if (sewa.status === 'selesai') {
           throw new BadRequestException('Sewa sudah selesai');
         }
 
@@ -636,54 +485,35 @@ export class SewaService {
           'Tanggal selesai',
         );
 
-        const tglKembaliMoment = this.getMomentWIB(sewa.tgl_kembali);
-        const tglSelesaiMoment = this.getMomentWIB(tglSelesaiDate);
-        const sekarangMoment = moment().tz(this.TIMEZONE);
-
-        console.log('📅 Completion date validation:', {
-          tgl_kembali_jadwal: tglKembaliMoment.format('DD/MM/YYYY HH:mm:ss'),
-          tgl_selesai_aktual: tglSelesaiMoment.format('DD/MM/YYYY HH:mm:ss'),
-          sekarang: sekarangMoment.format('DD/MM/YYYY HH:mm:ss'),
-          is_late: tglSelesaiMoment.isAfter(tglKembaliMoment),
-          is_future: tglSelesaiMoment.isAfter(sekarangMoment),
-        });
-
         // Validasi: tanggal selesai tidak boleh di masa depan
-        if (tglSelesaiMoment.isAfter(sekarangMoment)) {
+        const sekarang = new Date();
+        if (tglSelesaiDate > sekarang) {
           throw new BadRequestException(
             'Tanggal selesai tidak boleh di masa depan',
           );
         }
 
         let denda = 0;
-        let statusSelesai = this.STATUS_SELESAI.TEPAT_WAKTU;
+        let statusSelesai = 'Tepat Waktu';
         let keterlambatanMenit = 0;
 
         // Calculate penalty if late
-        if (tglSelesaiMoment.isAfter(tglKembaliMoment)) {
-          statusSelesai = this.STATUS_SELESAI.TERLAMBAT;
+        if (tglSelesaiDate > sewa.tgl_kembali) {
+          statusSelesai = 'Terlambat';
+
+          const diffMs = tglSelesaiDate.getTime() - sewa.tgl_kembali.getTime();
+          const diffMinutes = Math.ceil(diffMs / (1000 * 60));
+
+          keterlambatanMenit = diffMinutes;
 
           if (sewa.satuan_durasi === 'jam') {
-            keterlambatanMenit = Math.ceil(
-              tglSelesaiMoment.diff(tglKembaliMoment, 'minutes', true),
-            );
             const hargaPerJam = Math.ceil(sewa.motor.harga / 24);
-            denda = Math.ceil((keterlambatanMenit / 60) * hargaPerJam * 0.5);
+            denda = Math.ceil((diffMinutes / 60) * hargaPerJam * 0.5);
           } else {
-            const jamTerlambat = tglSelesaiMoment.diff(
-              tglKembaliMoment,
-              'hours',
-              true,
-            );
+            const diffHours = diffMinutes / 60;
             const hargaPerJam = Math.ceil(sewa.motor.harga / 24);
-            denda = Math.ceil(jamTerlambat * hargaPerJam * 0.5);
+            denda = Math.ceil(diffHours * hargaPerJam * 0.5);
           }
-
-          console.log('💰 Denda calculation:', {
-            keterlambatanMenit,
-            denda,
-            statusSelesai,
-          });
         }
 
         const history = await prisma.history.create({
@@ -717,7 +547,6 @@ export class SewaService {
           sewa_id: id,
           history_id: history.id,
           denda,
-          tgl_selesai: tglSelesaiDate.toLocaleString('id-ID'),
         });
 
         return history;
@@ -736,7 +565,7 @@ export class SewaService {
     });
   }
 
-  // ✅ METHOD: Remove Sewa
+  // ✅ REMOVE
   async remove(id: number) {
     return this.prisma.$transaction(async (prisma) => {
       try {
@@ -752,7 +581,7 @@ export class SewaService {
         }
 
         // Kembalikan status motor jika sewa belum selesai
-        if (sewa.status !== this.STATUS.SELESAI) {
+        if (sewa.status !== 'selesai') {
           await prisma.motor.update({
             where: { id: sewa.motor_id },
             data: { status: 'tersedia' },
@@ -786,7 +615,7 @@ export class SewaService {
     });
   }
 
-  // ✅ METHOD: Update Notes
+  // ✅ UPDATE NOTES
   async updateNotes(id: number, catatan_tambahan: string) {
     try {
       console.log(`=== 📝 UPDATE NOTES SEWA ID ${id} ===`);
@@ -841,7 +670,7 @@ export class SewaService {
     }
   }
 
-  // ✅ METHOD: Find All Sewa with History
+  // ✅ FIND ALL WITH HISTORY
   async findAllWithHistory() {
     try {
       const sewas = await this.prisma.sewa.findMany({
@@ -885,11 +714,11 @@ export class SewaService {
     }
   }
 
-  // ✅ METHOD: Find Active Sewa Only
+  // ✅ FIND ACTIVE ONLY
   async findActive() {
     try {
       const sewas = await this.prisma.sewa.findMany({
-        where: { status: this.STATUS.AKTIF },
+        where: { status: 'aktif' },
         include: {
           motor: {
             select: {
@@ -923,11 +752,11 @@ export class SewaService {
     }
   }
 
-  // ✅ METHOD: Find Completed Sewa Only
+  // ✅ FIND COMPLETED ONLY
   async findCompleted() {
     try {
       const sewas = await this.prisma.sewa.findMany({
-        where: { status: this.STATUS.SELESAI },
+        where: { status: 'selesai' },
         include: {
           motor: {
             select: {
