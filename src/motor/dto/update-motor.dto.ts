@@ -13,24 +13,29 @@ const CURRENT_YEAR = new Date().getFullYear();
 export class UpdateMotorDto {
   @IsString()
   @Length(1, 20)
-  plat_nomor: string;
+  @IsOptional()
+  plat_nomor?: string;
 
   @IsString()
   @Length(1, 255)
-  merk: string;
+  @IsOptional()
+  merk?: string;
 
   @IsString()
   @Length(1, 255)
-  model: string;
+  @IsOptional()
+  model?: string;
 
   @IsNumber()
   @Min(1990)
   @Max(CURRENT_YEAR + 1)
-  tahun: number;
+  @IsOptional()
+  tahun?: number;
 
   @IsNumber()
   @Min(0)
-  harga: number;
+  @IsOptional()
+  harga?: number;
 
   @IsString()
   @IsOptional()
@@ -43,6 +48,21 @@ export class UpdateMotorDto {
   imei?: string;
 
   @IsString()
-  @IsIn(['tersedia', 'disewa', 'perbaikan'])
-  status: string;
+  @IsIn(['tersedia', 'disewa', 'perbaikan', 'pending_perbaikan'])
+  @IsOptional()
+  status?: string;
+
+  // ✅ TAMBAHKAN SERVICE FIELDS
+  @IsString()
+  @IsOptional()
+  @Length(0, 255)
+  service_technician?: string;
+
+  @IsString()
+  @IsOptional()
+  last_service_date?: string;
+
+  @IsString()
+  @IsOptional()
+  service_notes?: string;
 }

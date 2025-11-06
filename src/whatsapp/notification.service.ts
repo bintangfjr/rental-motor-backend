@@ -79,6 +79,7 @@ export class NotificationService {
         type: 'reminder_2jam',
         status: success ? 'sent' : 'failed',
         response: success ? 'Success' : 'Failed',
+        sewa_id: sewaId,
       },
     });
 
@@ -145,6 +146,7 @@ export class NotificationService {
           type: 'alert_admin',
           status: success ? 'sent' : 'failed',
           response: success ? 'Success' : 'Failed',
+          sewa_id: sewaId,
         },
       });
     }

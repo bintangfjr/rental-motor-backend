@@ -42,12 +42,44 @@ export class PenyewaController {
   @UseGuards(JwtAuthGuard)
   async findOne(@Param('id') id: string) {
     try {
-      const penyewa = await this.penyewaService.findOne(+id); // ✅ Kembali ke konversi
+      const penyewa = await this.penyewaService.findOne(+id);
       return { success: true, data: penyewa };
     } catch (error) {
       if (error instanceof HttpException) throw error;
       throw new HttpException(
         'Failed to fetch penyewa',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  // ✅ ENDPOINT BARU: Get History Sewa by Penyewa ID
+  @Get(':id/history')
+  @UseGuards(JwtAuthGuard)
+  async getPenyewaHistory(@Param('id') id: string) {
+    try {
+      const history = await this.penyewaService.getPenyewaHistory(+id);
+      return { success: true, data: history };
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(
+        'Failed to fetch penyewa history',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  // ✅ ENDPOINT BARU: Get Statistik History Sewa
+  @Get(':id/history/stats')
+  @UseGuards(JwtAuthGuard)
+  async getPenyewaHistoryStats(@Param('id') id: string) {
+    try {
+      const stats = await this.penyewaService.getPenyewaHistoryStats(+id);
+      return { success: true, data: stats };
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(
+        'Failed to fetch penyewa history stats',
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
@@ -89,7 +121,6 @@ export class PenyewaController {
         message: 'Penyewa berhasil ditambahkan.',
       };
     } catch (error: unknown) {
-      // Handle Prisma unique constraint error
       if (
         this.isPrismaClientKnownRequestError(error) &&
         error.code === 'P2002'
@@ -100,10 +131,8 @@ export class PenyewaController {
         );
       }
 
-      // Handle other errors with proper type checking
       const errorMessage =
         error instanceof Error ? error.message : 'Failed to create penyewa';
-
       throw new HttpException(errorMessage, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
@@ -139,7 +168,7 @@ export class PenyewaController {
   ) {
     try {
       const penyewa = await this.penyewaService.update(
-        +id, // ✅ Kembali ke konversi
+        +id,
         updatePenyewaDto,
         file,
       );
@@ -151,7 +180,6 @@ export class PenyewaController {
     } catch (error: unknown) {
       if (error instanceof HttpException) throw error;
 
-      // Handle Prisma unique constraint error
       if (
         this.isPrismaClientKnownRequestError(error) &&
         error.code === 'P2002'
@@ -162,10 +190,8 @@ export class PenyewaController {
         );
       }
 
-      // Handle other errors with proper type checking
       const errorMessage =
         error instanceof Error ? error.message : 'Failed to update penyewa';
-
       throw new HttpException(errorMessage, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
@@ -174,7 +200,7 @@ export class PenyewaController {
   @UseGuards(JwtAuthGuard)
   async toggleBlacklist(@Param('id') id: string) {
     try {
-      const penyewa = await this.penyewaService.toggleBlacklist(+id); // ✅ Kembali ke konversi
+      const penyewa = await this.penyewaService.toggleBlacklist(+id);
       const message = penyewa.is_blacklisted
         ? 'Penyewa berhasil ditambahkan ke daftar hitam.'
         : 'Penyewa berhasil dihapus dari daftar hitam.';
@@ -197,7 +223,7 @@ export class PenyewaController {
   @UseGuards(JwtAuthGuard)
   async remove(@Param('id') id: string) {
     try {
-      const result = await this.penyewaService.remove(+id); // ✅ Kembali ke konversi
+      const result = await this.penyewaService.remove(+id);
       return {
         success: true,
         message: result.message,
@@ -205,15 +231,12 @@ export class PenyewaController {
     } catch (error: unknown) {
       if (error instanceof HttpException) throw error;
 
-      // Handle other errors with proper type checking
       const errorMessage =
         error instanceof Error ? error.message : 'Failed to delete penyewa';
-
       throw new HttpException(errorMessage, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 
-  // Type guard untuk Prisma errors
   private isPrismaClientKnownRequestError(
     error: unknown,
   ): error is { code: string } {

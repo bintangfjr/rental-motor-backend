@@ -10,6 +10,7 @@ export interface WhatsAppConfig {
 export interface FonnteResponse {
   status: boolean;
   reason?: string;
+  message?: string;
   [key: string]: unknown;
 }
 

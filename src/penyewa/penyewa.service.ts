@@ -37,7 +37,6 @@ export class PenyewaService {
   }
 
   async findOne(id: number) {
-    // ✅ Kembali ke number
     const penyewa = await this.prisma.penyewa.findUnique({
       where: { id },
       include: {
@@ -80,6 +79,69 @@ export class PenyewaService {
     };
   }
 
+  // ✅ METHOD BARU: Get History Sewa by Penyewa ID
+  async getPenyewaHistory(penyewaId: number) {
+    const penyewa = await this.prisma.penyewa.findUnique({
+      where: { id: penyewaId },
+    });
+
+    if (!penyewa) {
+      throw new NotFoundException('Penyewa not found');
+    }
+
+    return this.prisma.history.findMany({
+      where: {
+        penyewa_whatsapp: penyewa.no_whatsapp, // Menggunakan no_whatsapp sebagai identifier
+      },
+      orderBy: { tgl_selesai: 'desc' },
+    });
+  }
+
+  // ✅ METHOD BARU: Get Statistik History Sewa
+  async getPenyewaHistoryStats(penyewaId: number) {
+    const penyewa = await this.prisma.penyewa.findUnique({
+      where: { id: penyewaId },
+    });
+
+    if (!penyewa) {
+      throw new NotFoundException('Penyewa not found');
+    }
+
+    const histories = await this.prisma.history.findMany({
+      where: {
+        penyewa_whatsapp: penyewa.no_whatsapp,
+      },
+    });
+
+    const totalSewa = histories.length;
+    const totalPendapatan = histories.reduce(
+      (sum, item) => sum + item.harga,
+      0,
+    );
+    const totalDenda = histories.reduce(
+      (sum, item) => sum + (item.denda || 0),
+      0,
+    );
+    const sewaSelesai = histories.filter(
+      (item) => item.status_selesai === 'Selesai',
+    ).length;
+    const sewaDenda = histories.filter((item) => (item.denda || 0) > 0).length;
+    const keterlambatanTotal = histories.reduce(
+      (sum, item) => sum + (item.keterlambatan_menit || 0),
+      0,
+    );
+
+    return {
+      totalSewa,
+      totalPendapatan,
+      totalDenda,
+      sewaSelesai,
+      sewaDenda,
+      keterlambatanTotal,
+      rataRataDenda: sewaDenda > 0 ? totalDenda / sewaDenda : 0,
+    };
+  }
+
   async create(createPenyewaDto: CreatePenyewaDto, file?: Express.Multer.File) {
     try {
       const data: any = {
@@ -106,7 +168,6 @@ export class PenyewaService {
         },
       });
     } catch (error: unknown) {
-      // Handle Prisma unique constraint error
       if (
         this.isPrismaClientKnownRequestError(error) &&
         error.code === 'P2002'
@@ -121,7 +182,7 @@ export class PenyewaService {
   }
 
   async update(
-    id: number, // ✅ Kembali ke number
+    id: number,
     updatePenyewaDto: UpdatePenyewaDto,
     file?: Express.Multer.File,
   ) {
@@ -138,7 +199,6 @@ export class PenyewaService {
       };
 
       if (file) {
-        // Hapus foto lama jika ada
         if (penyewa.foto_ktp) {
           const oldFilePath = path.join('uploads', penyewa.foto_ktp);
           if (fs.existsSync(oldFilePath)) {
@@ -163,7 +223,6 @@ export class PenyewaService {
         },
       });
     } catch (error: unknown) {
-      // Handle Prisma unique constraint error
       if (
         this.isPrismaClientKnownRequestError(error) &&
         error.code === 'P2002'
@@ -178,7 +237,6 @@ export class PenyewaService {
   }
 
   async toggleBlacklist(id: number) {
-    // ✅ Kembali ke number
     const penyewa = await this.prisma.penyewa.findUnique({ where: { id } });
     if (!penyewa) {
       throw new NotFoundException('Penyewa not found');
@@ -203,7 +261,6 @@ export class PenyewaService {
   }
 
   async remove(id: number) {
-    // ✅ Kembali ke number
     const penyewa = await this.prisma.penyewa.findUnique({
       where: { id },
       include: {
@@ -225,7 +282,6 @@ export class PenyewaService {
       );
     }
 
-    // Hapus foto jika ada
     if (penyewa.foto_ktp) {
       const filePath = path.join('uploads', penyewa.foto_ktp);
       if (fs.existsSync(filePath)) {
@@ -233,12 +289,10 @@ export class PenyewaService {
       }
     }
 
-    // Hapus semua sewa terkait
     await this.prisma.sewa.deleteMany({
       where: { penyewa_id: id },
     });
 
-    // Hapus penyewa
     await this.prisma.penyewa.delete({
       where: { id },
     });
@@ -246,7 +300,6 @@ export class PenyewaService {
     return { message: 'Penyewa berhasil dihapus.' };
   }
 
-  // Type guard untuk Prisma errors
   private isPrismaClientKnownRequestError(
     error: unknown,
   ): error is { code: string } {

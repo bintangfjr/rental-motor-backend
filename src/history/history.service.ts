@@ -8,60 +8,23 @@ export class HistoryService {
 
   async findAll(page: number = 1, limit: number = 10, search?: string) {
     const skip = (page - 1) * limit;
-    const where: Prisma.HistoryWhereInput = {};
 
-    if (search) {
-      where.OR = [
-        {
-          sewa: {
-            motor: {
-              plat_nomor: {
-                contains: search,
-              },
-            },
-          },
-        },
-        {
-          sewa: {
-            penyewa: {
-              nama: {
-                contains: search,
-              },
-            },
-          },
-        },
-        {
-          status_selesai: {
-            contains: search,
-          },
-        },
-      ];
-    }
+    // ✅ FIXED: Search langsung di field history (bukan melalui relation)
+    const where: Prisma.HistoryWhereInput = search
+      ? {
+          OR: [
+            { motor_plat: { contains: search } },
+            { penyewa_nama: { contains: search } },
+            { status_selesai: { contains: search } },
+            { catatan: { contains: search } },
+          ],
+        }
+      : {};
 
     const [histories, total] = await Promise.all([
       this.prisma.history.findMany({
         where,
-        include: {
-          sewa: {
-            include: {
-              motor: {
-                select: {
-                  id: true,
-                  plat_nomor: true,
-                  merk: true,
-                  model: true,
-                },
-              },
-              penyewa: {
-                select: {
-                  id: true,
-                  nama: true,
-                  no_whatsapp: true,
-                },
-              },
-            },
-          },
-        },
+        // ✅ FIXED: Tidak perlu include sewa karena data sudah lengkap
         orderBy: { tgl_selesai: 'desc' },
         skip,
         take: limit,
@@ -83,37 +46,7 @@ export class HistoryService {
   async findOne(id: number) {
     const history = await this.prisma.history.findUnique({
       where: { id },
-      include: {
-        sewa: {
-          include: {
-            motor: {
-              select: {
-                id: true,
-                plat_nomor: true,
-                merk: true,
-                model: true,
-                tahun: true,
-                harga: true,
-              },
-            },
-            penyewa: {
-              select: {
-                id: true,
-                nama: true,
-                no_whatsapp: true,
-                alamat: true,
-              },
-            },
-            admin: {
-              select: {
-                id: true,
-                nama_lengkap: true,
-                username: true,
-              },
-            },
-          },
-        },
-      },
+      // ✅ FIXED: Data sudah lengkap, tidak perlu include relation
     });
 
     if (!history) {
@@ -162,15 +95,8 @@ export class HistoryService {
         _count: { id: true },
       }),
 
+      // ✅ FIXED: Data sudah lengkap, tidak perlu include relation
       this.prisma.history.findMany({
-        include: {
-          sewa: {
-            include: {
-              motor: { select: { plat_nomor: true, merk: true } },
-              penyewa: { select: { nama: true } },
-            },
-          },
-        },
         orderBy: { created_at: 'desc' },
         take: 5,
       }),
@@ -199,12 +125,29 @@ export class HistoryService {
           lte: endDate,
         },
       },
-      include: {
-        sewa: {
-          include: {
-            motor: { select: { plat_nomor: true, merk: true, model: true } },
-            penyewa: { select: { nama: true, no_whatsapp: true } },
-          },
+      // ✅ FIXED: Data sudah lengkap, tidak perlu include relation
+      orderBy: { tgl_selesai: 'desc' },
+    });
+  }
+
+  // ✅ METHOD BARU: Cari history by plat motor
+  async findByPlatMotor(platNomor: string) {
+    return this.prisma.history.findMany({
+      where: {
+        motor_plat: {
+          contains: platNomor,
+        },
+      },
+      orderBy: { tgl_selesai: 'desc' },
+    });
+  }
+
+  // ✅ METHOD BARU: Cari history by nama penyewa
+  async findByPenyewa(namaPenyewa: string) {
+    return this.prisma.history.findMany({
+      where: {
+        penyewa_nama: {
+          contains: namaPenyewa,
         },
       },
       orderBy: { tgl_selesai: 'desc' },

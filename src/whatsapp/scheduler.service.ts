@@ -18,7 +18,6 @@ export class SchedulerService {
     private notificationService: NotificationService,
   ) {}
 
-  // ✅ UBAH: Setiap menit sekali (detik 0 dari setiap menit)
   @Cron('0 * * * * *')
   async handleAutomaticNotifications() {
     this.logger.log('🚀 Memeriksa notifikasi otomatis setiap menit...');
@@ -44,18 +43,17 @@ export class SchedulerService {
   }
 
   async sendAutomaticReminders(settings: WhatsAppConfig) {
-    // GUNAKAN UTC TIME untuk konsistensi dengan database
     const nowUTC = moment().utc();
 
-    // ✅ PERBAIKI: Rentang waktu lebih presisi (2 jam ± 1 menit)
+    // ✅ PERBAIKI: Rentang lebih longgar (2 jam ± 10 menit)
     const reminderThresholdStart = nowUTC
       .clone()
       .add(2, 'hours')
-      .subtract(1, 'minute');
+      .subtract(10, 'minutes');
     const reminderThresholdEnd = nowUTC
       .clone()
       .add(2, 'hours')
-      .add(1, 'minute');
+      .add(10, 'minutes');
 
     this.logger.log(
       `🕒 Waktu UTC saat ini: ${nowUTC.format('YYYY-MM-DD HH:mm:ss')}`,
@@ -64,6 +62,7 @@ export class SchedulerService {
       `📅 Rentang pengingat 2 jam: ${reminderThresholdStart.format('HH:mm:ss')} - ${reminderThresholdEnd.format('HH:mm:ss')}`,
     );
 
+    // ✅ PERBAIKI: Query lebih sederhana
     const dueSewas = await this.prisma.sewa.findMany({
       where: {
         status: this.STATUS.AKTIF,
@@ -71,15 +70,16 @@ export class SchedulerService {
           gte: reminderThresholdStart.toDate(),
           lte: reminderThresholdEnd.toDate(),
         },
-        OR: [
-          { status_notifikasi: null },
-          { status_notifikasi: 'failed' },
-          { status_notifikasi: 'pending' },
-        ],
+        // ✅ Hanya yang belum pernah sukses
+        status_notifikasi: { not: 'sent' },
       },
       include: {
-        penyewa: true,
-        motor: true,
+        penyewa: {
+          select: { id: true, nama: true, no_whatsapp: true },
+        },
+        motor: {
+          select: { id: true, plat_nomor: true, merk: true, model: true },
+        },
       },
     });
 
@@ -87,33 +87,33 @@ export class SchedulerService {
       `📨 Menemukan ${dueSewas.length} sewa untuk pengingat 2 jam sebelum jatuh tempo`,
     );
 
+    let successCount = 0;
+    let skipCount = 0;
+
     for (const sewa of dueSewas) {
       try {
-        // ✅ PERBAIKI: Cek apakah notifikasi sudah dikirim dalam 30 menit terakhir
+        // ✅ PERBAIKI: Gunakan sewa_id yang sudah tersedia
         const recentlyNotified = await this.checkRecentNotification(
           sewa.id,
-          30,
-        ); // 30 menit
+          30, // 30 menit
+        );
+
         if (recentlyNotified) {
           this.logger.log(
-            `⏩ Skip sewa ID: ${sewa.id} - sudah dikirim notifikasi baru-baru ini`,
+            `⏩ Skip sewa ID: ${sewa.id} - sudah dikirim dalam 30 menit terakhir`,
           );
+          skipCount++;
           continue;
         }
 
-        await this.prisma.sewa.update({
-          where: { id: sewa.id },
-          data: {
-            status_notifikasi: 'pending',
-          },
-        });
-
+        // ✅ PERBAIKI: Langsung kirim tanpa update status pending
         const result = await this.notificationService.sendReminder(
           sewa.id,
           settings,
         );
 
         if (result.success) {
+          successCount++;
           this.logger.log(
             `✅ Pengingat 2 jam berhasil dikirim untuk sewa ID: ${sewa.id}`,
           );
@@ -121,50 +121,48 @@ export class SchedulerService {
           this.logger.warn(
             `❌ Pengingat 2 jam gagal untuk sewa ID: ${sewa.id}`,
           );
-          await this.prisma.sewa.update({
-            where: { id: sewa.id },
-            data: { status_notifikasi: 'failed' },
-          });
         }
 
-        // ✅ Delay 1 detik antara pengiriman untuk menghindari spam
+        // ✅ Delay 1 detik antara pengiriman
         await new Promise((resolve) => setTimeout(resolve, 1000));
       } catch (error) {
         this.logger.error(
           `💥 Gagal mengirim pengingat 2 jam untuk sewa ID: ${sewa.id}`,
           error instanceof Error ? error.message : 'Unknown error',
         );
-        await this.prisma.sewa.update({
-          where: { id: sewa.id },
-          data: { status_notifikasi: 'failed' },
-        });
       }
     }
+
+    // ✅ LOG STATISTIK
+    this.logger.log(
+      `📊 STATISTIK REMINDER: ${successCount} berhasil, ${skipCount} skip, ${dueSewas.length - successCount - skipCount} gagal`,
+    );
   }
 
   async sendAutomaticAlerts(settings: WhatsAppConfig) {
-    // GUNAKAN UTC TIME untuk konsistensi dengan database
     const nowUTC = moment().utc();
 
     this.logger.log(
       `🔍 Memeriksa sewa lewat tempo pada UTC: ${nowUTC.format('YYYY-MM-DD HH:mm:ss')}`,
     );
 
+    // ✅ PERBAIKI: Query lebih sederhana
     const overdueSewas = await this.prisma.sewa.findMany({
       where: {
         status: this.STATUS.AKTIF,
         tgl_kembali: {
-          lt: nowUTC.toDate(), // Gunakan waktu UTC
+          lt: nowUTC.toDate(),
         },
-        OR: [
-          { status_notifikasi: null },
-          { status_notifikasi: 'failed' },
-          { status_notifikasi: 'pending' },
-        ],
+        // ✅ Hanya yang belum pernah sukses
+        status_notifikasi: { not: 'sent' },
       },
       include: {
-        penyewa: true,
-        motor: true,
+        penyewa: {
+          select: { id: true, nama: true, no_whatsapp: true },
+        },
+        motor: {
+          select: { id: true, plat_nomor: true, merk: true, model: true },
+        },
       },
     });
 
@@ -172,35 +170,33 @@ export class SchedulerService {
       `⚠️ Menemukan ${overdueSewas.length} sewa yang lewat tempo untuk alert otomatis`,
     );
 
-    // Debug: log detail sewa yang ditemukan
+    // Debug log
     overdueSewas.forEach((sewa) => {
       const tglKembaliUTC = moment(sewa.tgl_kembali).utc();
       const diffMinutes = nowUTC.diff(tglKembaliUTC, 'minutes');
       this.logger.log(
-        `📋 Sewa ID: ${sewa.id}, Tgl Kembali (UTC): ${tglKembaliUTC.format('YYYY-MM-DD HH:mm:ss')}, Terlambat: ${diffMinutes} menit`,
+        `📋 Sewa ID: ${sewa.id}, Terlambat: ${diffMinutes} menit, Status Notif: ${sewa.status_notifikasi}`,
       );
     });
 
+    let successCount = 0;
+    let skipCount = 0;
+
     for (const sewa of overdueSewas) {
       try {
-        // ✅ PERBAIKI: Cek apakah notifikasi sudah dikirim dalam 1 jam terakhir
+        // ✅ PERBAIKI: Gunakan sewa_id yang sudah tersedia
         const recentlyNotified = await this.checkRecentNotification(
           sewa.id,
-          60,
-        ); // 60 menit
+          60, // 60 menit
+        );
+
         if (recentlyNotified) {
           this.logger.log(
-            `⏩ Skip alert sewa ID: ${sewa.id} - sudah dikirim notifikasi baru-baru ini`,
+            `⏩ Skip alert sewa ID: ${sewa.id} - sudah dikirim dalam 1 jam terakhir`,
           );
+          skipCount++;
           continue;
         }
-
-        await this.prisma.sewa.update({
-          where: { id: sewa.id },
-          data: {
-            status_notifikasi: 'pending',
-          },
-        });
 
         const result = await this.notificationService.sendAlert(
           sewa.id,
@@ -208,33 +204,31 @@ export class SchedulerService {
         );
 
         if (result.success) {
+          successCount++;
           this.logger.log(
             `✅ Alert otomatis berhasil dikirim untuk sewa ID: ${sewa.id}`,
           );
         } else {
           this.logger.warn(`❌ Alert otomatis gagal untuk sewa ID: ${sewa.id}`);
-          await this.prisma.sewa.update({
-            where: { id: sewa.id },
-            data: { status_notifikasi: 'failed' },
-          });
         }
 
-        // ✅ Delay 1 detik antara pengiriman untuk menghindari spam
+        // ✅ Delay 1 detik antara pengiriman
         await new Promise((resolve) => setTimeout(resolve, 1000));
       } catch (error) {
         this.logger.error(
           `💥 Gagal mengirim alert otomatis untuk sewa ID: ${sewa.id}`,
           error instanceof Error ? error.message : 'Unknown error',
         );
-        await this.prisma.sewa.update({
-          where: { id: sewa.id },
-          data: { status_notifikasi: 'failed' },
-        });
       }
     }
+
+    // ✅ LOG STATISTIK
+    this.logger.log(
+      `📊 STATISTIK ALERT: ${successCount} berhasil, ${skipCount} skip, ${overdueSewas.length - successCount - skipCount} gagal`,
+    );
   }
 
-  // ✅ METHOD BARU: Cek notifikasi terakhir untuk menghindari spam
+  // ✅ PERBAIKI: Method checkRecentNotification yang AKURAT
   private async checkRecentNotification(
     sewaId: number,
     minutesThreshold: number,
@@ -244,18 +238,16 @@ export class SchedulerService {
       .subtract(minutesThreshold, 'minutes')
       .toDate();
 
+    // ✅ GUNAKAN sewa_id yang sudah tersedia di database
     const recentNotification = await this.prisma.whatsAppNotification.findFirst(
       {
         where: {
-          target: { contains: sewaId.toString() }, // Target mungkin berisi ID sewa
+          sewa_id: sewaId, // ✅ LANGSUNG PAKAI sewa_id
           type: { in: ['reminder_2jam', 'alert_admin'] },
           status: 'sent',
           created_at: {
             gte: thresholdTime,
           },
-        },
-        orderBy: {
-          created_at: 'desc',
         },
       },
     );

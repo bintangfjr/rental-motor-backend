@@ -10,14 +10,15 @@ import { UpdateSewaDto } from './dto/update-sewa.dto';
 import { SelesaiSewaDto } from './dto/selesai-sewa.dto';
 import { AdditionalCostItemDto } from './dto/create-sewa.dto';
 
-// ✅ Type untuk Prisma JSON field
-type PrismaJsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | PrismaJsonValue[]
-  | { [key: string]: PrismaJsonValue };
+interface UpdateSewaData {
+  tgl_kembali?: Date;
+  durasi_sewa?: number;
+  total_harga?: number;
+  additional_costs?: string | null;
+  jaminan?: string;
+  pembayaran?: string;
+  catatan_tambahan?: string | null;
+}
 
 @Injectable()
 export class SewaService {
@@ -101,7 +102,11 @@ export class SewaService {
   // ✅ FIXED: Calculate additional costs dengan type safety
   private calculateAdditionalCostsTotals(
     additionalCosts: AdditionalCostItemDto[] = [],
-  ) {
+  ): {
+    totalDiscount: number;
+    totalAdditional: number;
+    netAdditionalCosts: number;
+  } {
     const totalDiscount = additionalCosts
       .filter((cost) => cost.type === 'discount')
       .reduce((sum, cost) => sum + cost.amount, 0);
@@ -117,20 +122,22 @@ export class SewaService {
     };
   }
 
-  // ✅ FIXED: Convert AdditionalCostItemDto[] ke Prisma JSON format
+  // ✅ FIXED: Convert AdditionalCostItemDto[] ke JSON string untuk Prisma
   private convertAdditionalCostsForPrisma(
     additionalCosts: AdditionalCostItemDto[],
-  ): PrismaJsonValue | null {
+  ): string | null {
     if (!additionalCosts || additionalCosts.length === 0) {
       return null;
     }
 
-    // Convert ke plain object array untuk Prisma JSON field
-    return additionalCosts.map((cost) => ({
-      description: cost.description,
-      amount: cost.amount,
-      type: cost.type,
-    })) as PrismaJsonValue;
+    // Convert ke JSON string untuk Prisma JSON field
+    return JSON.stringify(
+      additionalCosts.map((cost) => ({
+        description: cost.description,
+        amount: cost.amount,
+        type: cost.type,
+      })),
+    );
   }
 
   // ✅ METHOD: Convert jaminan to string
@@ -141,7 +148,7 @@ export class SewaService {
     return Array.isArray(jaminan) ? jaminan.join(', ') : jaminan;
   }
 
-  // ✅ CREATE - Fixed All Errors
+  // ✅ CREATE - Fixed All Errors dengan type safety
   async create(createSewaDto: CreateSewaDto, adminId: number) {
     return this.prisma.$transaction(async (prisma) => {
       try {
@@ -190,7 +197,7 @@ export class SewaService {
           motor.harga,
         );
 
-        // 6. Additional Costs - FIXED: Convert untuk Prisma
+        // 6. Additional Costs - FIXED: Convert untuk Prisma sebagai JSON string
         const additionalCosts = createSewaDto.additional_costs || [];
         const { netAdditionalCosts } =
           this.calculateAdditionalCostsTotals(additionalCosts);
@@ -243,10 +250,13 @@ export class SewaService {
     });
   }
 
-  // ✅ FIND ALL - Simplified
-  async findAll() {
+  // ✅ FIND ALL - Hanya sewa aktif (tidak termasuk yang selesai)
+  async findAll(status?: string) {
     try {
+      const where = status ? { status } : {};
+
       return await this.prisma.sewa.findMany({
+        where,
         include: {
           motor: {
             select: { id: true, plat_nomor: true, merk: true, model: true },
@@ -262,7 +272,7 @@ export class SewaService {
     }
   }
 
-  // ✅ FIND ONE - Simplified
+  // ✅ FIND ONE - Simplified dengan type safety
   async findOne(id: number) {
     try {
       const sewa = await this.prisma.sewa.findUnique({
@@ -281,12 +291,12 @@ export class SewaService {
             select: { id: true, nama: true, no_whatsapp: true, alamat: true },
           },
           admin: { select: { id: true, nama_lengkap: true } },
-          histories: { orderBy: { created_at: 'desc' } },
         },
       });
 
-      if (!sewa)
+      if (!sewa) {
         throw new NotFoundException(`Sewa dengan ID ${id} tidak ditemukan`);
+      }
       return sewa;
     } catch (error) {
       console.error(`Error in findOne sewa ID ${id}:`, error);
@@ -295,7 +305,7 @@ export class SewaService {
     }
   }
 
-  // ✅ UPDATE - Fixed All Errors
+  // ✅ UPDATE - Fixed dengan type safety dan tanpa unsafe access
   async update(id: number, updateSewaDto: UpdateSewaDto) {
     return this.prisma.$transaction(async (prisma) => {
       try {
@@ -313,26 +323,17 @@ export class SewaService {
           );
         }
 
-        // ✅ FIXED: Type-safe update data
-        const updateData: {
-          tgl_kembali?: Date;
-          durasi_sewa?: number;
-          total_harga?: number;
-          additional_costs?: PrismaJsonValue | null;
-          jaminan?: string;
-          pembayaran?: string;
-          catatan_tambahan?: string | null;
-        } = {};
+        // ✅ FIXED: Type-safe update data dengan interface
+        const updateData: UpdateSewaData = {};
 
-        // Handle tgl_kembali update - FIXED: Type safety
+        // Handle tgl_kembali update
         if (updateSewaDto.tgl_kembali) {
           const tglKembaliDate = this.parseDateInput(
             updateSewaDto.tgl_kembali,
             'Tanggal kembali',
           );
 
-          // ✅ FIXED: Type safety untuk tgl_sewa
-          if (tglKembaliDate <= (sewa.tgl_sewa as Date)) {
+          if (tglKembaliDate <= sewa.tgl_sewa) {
             throw new BadRequestException(
               'Tanggal kembali harus setelah tanggal sewa',
             );
@@ -340,9 +341,8 @@ export class SewaService {
 
           updateData.tgl_kembali = tglKembaliDate;
 
-          // ✅ FIXED: Type safety untuk durasi_sewa dan total_harga
           const { durasi, baseHarga } = this.calculateDurationAndPrice(
-            sewa.tgl_sewa as Date,
+            sewa.tgl_sewa,
             tglKembaliDate,
             sewa.satuan_durasi,
             sewa.motor.harga,
@@ -352,15 +352,22 @@ export class SewaService {
           updateData.total_harga = baseHarga;
         }
 
-        // Handle additional_costs update - FIXED: Type safety
+        // Handle additional_costs update - FIXED: Convert to JSON string
         if (updateSewaDto.additional_costs !== undefined) {
           const additionalCosts = updateSewaDto.additional_costs || [];
           const { netAdditionalCosts } =
             this.calculateAdditionalCostsTotals(additionalCosts);
 
-          // ✅ FIXED: Type safety untuk total_harga
-          const baseHarga = updateData.total_harga ?? sewa.total_harga;
-          updateData.total_harga = Math.max(0, baseHarga + netAdditionalCosts);
+          // ✅ FIXED: Tidak ada unsafe access - gunakan nilai yang sudah ada
+          const currentBaseHarga =
+            updateData.total_harga !== undefined
+              ? updateData.total_harga
+              : sewa.total_harga;
+
+          updateData.total_harga = Math.max(
+            0,
+            currentBaseHarga + netAdditionalCosts,
+          );
           updateData.additional_costs =
             this.convertAdditionalCostsForPrisma(additionalCosts);
         }
@@ -407,21 +414,27 @@ export class SewaService {
     });
   }
 
-  // ✅ SELESAI - Fixed Type Safety
+  // ✅✅✅ FIXED: SELESAI - Data pindah ke histories dan dihapus dari sewas
   async selesai(id: number, selesaiSewaDto: SelesaiSewaDto) {
     return this.prisma.$transaction(async (prisma) => {
       try {
         console.log(`=== 🚀 SELESAI SEWA ID ${id} ===`);
 
+        // 1. Cari data sewa lengkap
         const sewa = await prisma.sewa.findUnique({
           where: { id },
-          include: { motor: true },
+          include: {
+            motor: true,
+            penyewa: true,
+            admin: { select: { id: true, nama_lengkap: true } },
+          },
         });
 
         if (!sewa) throw new NotFoundException('Sewa tidak ditemukan');
         if (sewa.status === 'selesai')
           throw new BadRequestException('Sewa sudah selesai');
 
+        // 2. Validasi tanggal selesai
         const tglSelesaiDate = this.parseDateInput(
           selesaiSewaDto.tgl_selesai,
           'Tanggal selesai',
@@ -434,15 +447,15 @@ export class SewaService {
           );
         }
 
+        // 3. Hitung denda & keterlambatan
         let denda = 0;
         let statusSelesai = 'Tepat Waktu';
         let keterlambatanMenit = 0;
 
-        // Calculate penalty if late - FIXED: Type safety
-        if (tglSelesaiDate > (sewa.tgl_kembali as Date)) {
+        if (tglSelesaiDate > sewa.tgl_kembali) {
           statusSelesai = 'Terlambat';
           const diffMinutes = Math.ceil(
-            (tglSelesaiDate.getTime() - (sewa.tgl_kembali as Date).getTime()) /
+            (tglSelesaiDate.getTime() - sewa.tgl_kembali.getTime()) /
               (1000 * 60),
           );
           keterlambatanMenit = diffMinutes;
@@ -451,8 +464,10 @@ export class SewaService {
           denda = Math.ceil((diffMinutes / 60) * hargaPerJam * 0.5);
         }
 
+        // 4. ✅ SIMPAN DATA LENGKAP KE HISTORIES (sebelum hapus sewa)
         const history = await prisma.history.create({
           data: {
+            // Data completion
             sewa_id: id,
             tgl_selesai: tglSelesaiDate,
             status_selesai: statusSelesai,
@@ -460,25 +475,45 @@ export class SewaService {
             denda: denda,
             catatan: selesaiSewaDto.catatan || null,
             keterlambatan_menit: keterlambatanMenit,
+
+            // ✅ DATA SEWA LENGKAP (karena sewa akan dihapus)
+            motor_plat: sewa.motor.plat_nomor,
+            motor_merk: sewa.motor.merk,
+            motor_model: sewa.motor.model,
+            tahun_motor: sewa.motor.tahun,
+            penyewa_nama: sewa.penyewa.nama,
+            penyewa_whatsapp: sewa.penyewa.no_whatsapp,
+            admin_nama: sewa.admin.nama_lengkap,
+            tgl_sewa: sewa.tgl_sewa,
+            tgl_kembali: sewa.tgl_kembali,
+            durasi_sewa: sewa.durasi_sewa,
+            satuan_durasi: sewa.satuan_durasi,
+            jaminan: sewa.jaminan,
+            pembayaran: sewa.pembayaran,
+            additional_costs: sewa.additional_costs,
+            catatan_tambahan: sewa.catatan_tambahan,
           },
         });
 
-        // Update sewa status to completed
-        await prisma.sewa.update({
+        // 5. ✅ HAPUS DATA DARI TABLE SEWAS (setelah backup ke histories)
+        await prisma.sewa.delete({
           where: { id },
-          data: { status: 'selesai', status_notifikasi: 'selesai' },
         });
 
-        // Update motor status back to available
+        // 6. Update motor status back to available
         await prisma.motor.update({
           where: { id: sewa.motor_id },
           data: { status: 'tersedia' },
         });
 
-        console.log('✅ Sewa completed successfully');
-        return history;
+        console.log('✅✅✅ Sewa completed and moved to history successfully');
+
+        return {
+          message: 'Sewa berhasil diselesaikan dan dipindah ke histories',
+          history: history,
+        };
       } catch (error) {
-        console.error(`Error in selesai sewa ID ${id}:`, error);
+        console.error(`❌ Error in selesai sewa ID ${id}:`, error);
         if (
           error instanceof BadRequestException ||
           error instanceof NotFoundException
@@ -490,7 +525,7 @@ export class SewaService {
     });
   }
 
-  // ✅ REMOVE - Simplified
+  // ✅ REMOVE - Simplified dengan type safety
   async remove(id: number) {
     return this.prisma.$transaction(async (prisma) => {
       try {
@@ -498,7 +533,7 @@ export class SewaService {
 
         const sewa = await prisma.sewa.findUnique({
           where: { id },
-          include: { motor: true, histories: true },
+          include: { motor: true },
         });
 
         if (!sewa) throw new NotFoundException('Sewa tidak ditemukan');
@@ -509,11 +544,6 @@ export class SewaService {
             where: { id: sewa.motor_id },
             data: { status: 'tersedia' },
           });
-        }
-
-        // Hapus histories jika ada
-        if (sewa.histories.length > 0) {
-          await prisma.history.deleteMany({ where: { sewa_id: id } });
         }
 
         // Hapus sewa
@@ -529,7 +559,7 @@ export class SewaService {
     });
   }
 
-  // ✅ UPDATE NOTES - Simplified
+  // ✅ UPDATE NOTES - Simplified dengan type safety
   async updateNotes(id: number, catatan_tambahan: string) {
     try {
       console.log(`=== 📝 UPDATE NOTES SEWA ID ${id} ===`);
@@ -558,7 +588,7 @@ export class SewaService {
     }
   }
 
-  // ✅ FIND ACTIVE ONLY - Simplified
+  // ✅ FIND ACTIVE ONLY - Simplified dengan type safety
   async findActive() {
     try {
       return await this.prisma.sewa.findMany({
@@ -575,6 +605,32 @@ export class SewaService {
     } catch (error) {
       console.error('Error in findActive:', error);
       throw new InternalServerErrorException('Gagal mengambil data sewa aktif');
+    }
+  }
+
+  // ✅ NEW METHOD: Cari sewa yang sudah jatuh tempo tapi belum selesai
+  async findOverdue() {
+    try {
+      const sekarang = new Date();
+      return await this.prisma.sewa.findMany({
+        where: {
+          status: 'aktif',
+          tgl_kembali: { lt: sekarang }, // Tanggal kembali sudah lewat
+        },
+        include: {
+          motor: {
+            select: { id: true, plat_nomor: true, merk: true, model: true },
+          },
+          penyewa: { select: { id: true, nama: true, no_whatsapp: true } },
+          admin: { select: { id: true, nama_lengkap: true } },
+        },
+        orderBy: { tgl_kembali: 'asc' },
+      });
+    } catch (error) {
+      console.error('Error in findOverdue:', error);
+      throw new InternalServerErrorException(
+        'Gagal mengambil data sewa overdue',
+      );
     }
   }
 }

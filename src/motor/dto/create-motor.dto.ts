@@ -43,6 +43,21 @@ export class CreateMotorDto {
   imei?: string;
 
   @IsString()
-  @IsIn(['tersedia', 'disewa', 'perbaikan'])
-  status: string;
+  @IsIn(['tersedia', 'disewa', 'perbaikan', 'pending_perbaikan'])
+  @IsOptional()
+  status?: string;
+
+  // ✅ TAMBAHKAN SERVICE FIELDS
+  @IsString()
+  @IsOptional()
+  @Length(0, 255)
+  service_technician?: string;
+
+  @IsString()
+  @IsOptional()
+  last_service_date?: string;
+
+  @IsString()
+  @IsOptional()
+  service_notes?: string;
 }

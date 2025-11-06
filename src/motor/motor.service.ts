@@ -1,36 +1,172 @@
 // src/motor/motor.service.ts
-import {
-  Injectable,
-  ConflictException,
-  BadRequestException,
-  NotFoundException,
-  Inject,
-  Logger,
-} from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
+import { MotorGpsService } from './motor-gps.service';
+import { MotorMileageService } from './motor-mileage.service';
 import { CreateMotorDto } from './dto/create-motor.dto';
 import { UpdateMotorDto } from './dto/update-motor.dto';
-import { IopgpsService } from '../iopgps/iopgps.service';
+import { MotorCoreService } from './services/motor-core.service';
+import { MotorServiceService } from './services/motor-service.service';
+import { MotorValidatorService } from './services/motor-validator.service';
+import {
+  MotorEventsService,
+  MotorStatusUpdate,
+  MotorServiceUpdate,
+} from '../websocket/services/motor-events.service';
+import {
+  MotorResponseDto,
+  MotorDetailResponseDto,
+  MotorStatisticsResponseDto,
+} from './dto/motor-response.dto';
 
-// Interface untuk enhanced motor dengan GPS
-interface EnhancedMotor {
+// Constants untuk konsistensi
+const MOTOR_STATUS = {
+  TERSEDIA: 'tersedia',
+  DISEWA: 'disewa',
+  PERBAIKAN: 'perbaikan',
+  PENDING_PERBAIKAN: 'pending_perbaikan',
+} as const;
+
+const SERVICE_CONFIG = {
+  DEFAULT_MILEAGE_THRESHOLD: 800,
+  SERVICE_REMINDER_DAYS: 30,
+} as const;
+
+// Interface untuk relation items
+interface MileageHistoryItem {
+  id: number;
+  motor_id: number;
+  imei: string;
+  start_time: Date;
+  end_time: Date;
+  distance_km: unknown;
+  run_time_seconds: number;
+  average_speed_kmh: unknown;
+  period_date: Date;
+  created_at: Date;
+  updated_at: Date;
+}
+
+interface LocationCacheItem {
+  id: number;
+  motor_id: number;
+  imei: string;
+  lat: number;
+  lng: number;
+  address?: string | null;
+  speed?: unknown;
+  direction?: number | null;
+  gps_time: Date;
+  location_type: string;
+  created_at: Date;
+}
+
+interface ServiceRecordItem {
+  id: number;
+  motor_id: number;
+  status: string;
+  service_type: string;
+  service_date: Date;
+  estimated_completion?: Date | null;
+  actual_completion?: Date | null;
+  service_location: string;
+  service_technician: string;
+  parts?: unknown;
+  services?: unknown;
+  estimated_cost?: unknown;
+  actual_cost?: unknown;
+  notes?: string | null;
+  service_notes?: string | null;
+  mileage_at_service?: unknown;
+  created_at: Date;
+  updated_at: Date;
+}
+
+interface SewaItem {
+  id: number;
+  penyewa: {
+    id: number;
+    nama: string;
+    no_whatsapp: string;
+  };
+}
+
+interface MotorWithRelations {
   id: number;
   plat_nomor: string;
   merk: string;
   model: string;
+  tahun: number;
+  harga: number;
+  no_gsm?: string | null;
+  imei?: string | null;
   status: string;
+  device_id?: string | null;
   lat?: number | null;
   lng?: number | null;
   last_update?: Date | null;
-  imei?: string | null;
-  no_gsm?: string | null;
-  gps_status: 'realtime' | 'cached' | 'no_data' | 'no_imei';
-  location_source: 'iopgps' | 'database';
+  gps_status?: string | null;
+  total_mileage?: unknown;
+  last_known_address?: string | null;
+  last_mileage_sync?: Date | null;
+  service_technician?: string | null;
+  last_service_date?: Date | null;
+  service_notes?: string | null;
+  created_at: Date;
+  updated_at: Date;
+  sewas?: SewaItem[];
+  mileage_history?: MileageHistoryItem[];
+  location_cache?: LocationCacheItem[];
+  service_records?: ServiceRecordItem[];
 }
 
-// Interface untuk error handling
-interface ErrorWithMessage {
-  message: string;
+// Utility functions untuk conversion (sebagai fallback)
+function safeConvertDecimal(value: unknown): number {
+  if (value === null || value === undefined) return 0;
+
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') return parseFloat(value) || 0;
+
+  // Handle Prisma Decimal type
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    'toNumber' in value &&
+    typeof (value as { toNumber: unknown }).toNumber === 'function'
+  ) {
+    return (value as { toNumber: () => number }).toNumber();
+  }
+
+  return 0;
+}
+
+function safeConvertJsonToStringArray(value: unknown): string[] {
+  if (!value) return [];
+
+  try {
+    if (Array.isArray(value)) {
+      return value.filter((item): item is string => typeof item === 'string');
+    }
+
+    if (typeof value === 'string') {
+      const parsed = safeJsonParse<string[]>(value);
+      return Array.isArray(parsed)
+        ? parsed.filter((item): item is string => typeof item === 'string')
+        : [];
+    }
+
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+function safeJsonParse<T>(text: string): T | null {
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
 }
 
 @Injectable()
@@ -39,438 +175,595 @@ export class MotorService {
 
   constructor(
     private prisma: PrismaService,
-    @Inject(IopgpsService) private iopgpsService: IopgpsService,
+    private motorGpsService: MotorGpsService,
+    private motorMileageService: MotorMileageService,
+    private motorCoreService: MotorCoreService,
+    private motorServiceService: MotorServiceService,
+    private motorValidatorService: MotorValidatorService,
+    private motorEventsService: MotorEventsService,
   ) {}
 
-  private readonly STATUS = {
-    TERSEDIA: 'tersedia',
-    DISEWA: 'disewa',
-    PERBAIKAN: 'perbaikan',
-  };
+  /**
+   * Get all motors
+   */
+  async findAll(): Promise<MotorResponseDto[]> {
+    const motors = await this.motorCoreService.findAll();
+    return motors.map((motor) => MotorResponseDto.fromPrisma(motor));
+  }
 
   /**
-   * Extract error message safely
+   * Get single motor dengan data lengkap
    */
-  private getErrorMessage(error: unknown): string {
-    if (error instanceof Error) {
-      return error.message;
-    }
-    if (typeof error === 'string') {
-      return error;
-    }
-    if (error && typeof error === 'object' && 'message' in error) {
-      return String((error as ErrorWithMessage).message);
-    }
-    return 'Unknown error occurred';
-  }
-
-  async findAll() {
-    return this.prisma.motor.findMany({
-      orderBy: { created_at: 'desc' },
-      select: {
-        id: true,
-        plat_nomor: true,
-        merk: true,
-        model: true,
-        tahun: true,
-        harga: true,
-        no_gsm: true,
-        imei: true,
-        status: true,
-        device_id: true,
-        lat: true,
-        lng: true,
-        last_update: true,
-        created_at: true,
-        updated_at: true,
-      },
-    });
-  }
-
-  async findWithGps(): Promise<EnhancedMotor[]> {
-    const motors = await this.prisma.motor.findMany({
-      where: {
-        OR: [
-          { lat: { not: null }, lng: { not: null } },
-          { imei: { not: null } },
-        ],
-      },
-      select: {
-        id: true,
-        plat_nomor: true,
-        merk: true,
-        model: true,
-        status: true,
-        lat: true,
-        lng: true,
-        last_update: true,
-        imei: true,
-        no_gsm: true,
-      },
-    });
-
-    // Enhance with IOPGPS data for motors with IMEI
-    const enhancedMotors = await Promise.all(
-      motors.map(async (motor): Promise<EnhancedMotor> => {
-        if (!motor.imei) {
-          return {
-            ...motor,
-            gps_status: 'no_imei',
-            location_source: 'database',
-          };
-        }
-
-        try {
-          // Try to get real-time location from IOPGPS
-          const iopgpsLocation = await this.iopgpsService.getDeviceLocation(
-            motor.imei,
-          );
-
-          if (
-            iopgpsLocation.code === 0 &&
-            iopgpsLocation.lat &&
-            iopgpsLocation.lng
-          ) {
-            return {
-              ...motor,
-              lat: parseFloat(iopgpsLocation.lat),
-              lng: parseFloat(iopgpsLocation.lng),
-              last_update: iopgpsLocation.gpsTime
-                ? new Date(iopgpsLocation.gpsTime * 1000)
-                : motor.last_update,
-              gps_status: 'realtime',
-              location_source: 'iopgps',
-            };
-          }
-        } catch (error: unknown) {
-          // Fallback to database data
-          const errorMessage = this.getErrorMessage(error);
-          this.logger.warn(
-            `Failed to get IOPGPS data for IMEI ${motor.imei}: ${errorMessage}`,
-          );
-        }
-
-        return {
-          ...motor,
-          gps_status: motor.lat && motor.lng ? 'cached' : 'no_data',
-          location_source: 'database',
-        };
-      }),
-    );
-
-    return enhancedMotors;
-  }
-
-  async findOne(id: number) {
-    const motor = await this.prisma.motor.findUnique({
-      where: { id },
-      include: {
-        sewas: {
-          include: {
-            penyewa: {
-              select: {
-                id: true,
-                nama: true,
-                no_whatsapp: true,
-              },
-            },
-          },
-          orderBy: { created_at: 'desc' },
-        },
-      },
-    });
+  async findOne(id: number): Promise<MotorDetailResponseDto> {
+    const motor = await this.motorCoreService.findOneWithRelations(id);
 
     if (!motor) {
       throw new NotFoundException(`Motor dengan ID ${id} tidak ditemukan`);
     }
 
-    // Enhance with IOPGPS data if available
+    // Convert to DTO - handle type mismatch
+    const motorDto = this.convertToDetailDto(motor);
+
+    // Enhance dengan data GPS real-time jika tersedia
+    if (motor.imei && motor.gps_status !== 'NoImei') {
+      await this.enhanceWithGpsData(id, motorDto);
+    }
+
+    return motorDto;
+  }
+
+  /**
+   * Create new motor dengan Automatic Initial Sync
+   */
+  async create(createMotorDto: CreateMotorDto): Promise<MotorResponseDto> {
+    await this.motorValidatorService.validateCreateData(createMotorDto);
+
+    const createData =
+      this.motorValidatorService.buildCreateData(createMotorDto);
+    const motor = await this.motorCoreService.create(createData);
+
+    // Automatic Initial Sync untuk motor baru dengan IMEI
     if (motor.imei) {
-      try {
-        const iopgpsData = await this.iopgpsService.getDeviceLocation(
-          motor.imei,
-        );
-        if (iopgpsData.code === 0) {
-          // Create a new object to avoid mutating the original
-          return {
-            ...motor,
-            lat: iopgpsData.lat ? parseFloat(iopgpsData.lat) : motor.lat,
-            lng: iopgpsData.lng ? parseFloat(iopgpsData.lng) : motor.lng,
-            last_update: iopgpsData.gpsTime
-              ? new Date(iopgpsData.gpsTime * 1000)
-              : motor.last_update,
-          };
-        }
-      } catch (error: unknown) {
-        const errorMessage = this.getErrorMessage(error);
-        this.logger.warn(
-          `Failed to fetch IOPGPS data for motor ${id}: ${errorMessage}`,
-        );
-      }
+      await this.performInitialSync(motor.id, motor.imei, motor.plat_nomor);
     }
 
-    return motor;
+    // Emit WebSocket event
+    this.motorEventsService.emitMotorCreated(motor);
+
+    return MotorResponseDto.fromPrisma(motor);
   }
 
-  async create(createMotorDto: CreateMotorDto) {
-    // Cek plat nomor sudah ada atau belum
-    const existingMotor = await this.prisma.motor.findUnique({
-      where: { plat_nomor: createMotorDto.plat_nomor },
-    });
-
-    if (existingMotor) {
-      throw new ConflictException('Plat nomor sudah digunakan');
-    }
-
-    // Jika ada IMEI, validasi dengan IOPGPS
-    if (createMotorDto.imei) {
-      try {
-        const deviceInfo = await this.iopgpsService.getDeviceLocation(
-          createMotorDto.imei,
-        );
-        if (deviceInfo.code !== 0) {
-          throw new BadRequestException(
-            `IMEI ${createMotorDto.imei} tidak valid di sistem IOPGPS`,
-          );
-        }
-      } catch (error: unknown) {
-        const errorMessage = this.getErrorMessage(error);
-        throw new BadRequestException(
-          `Gagal memverifikasi IMEI: ${errorMessage}`,
-        );
-      }
-    }
-
-    return this.prisma.motor.create({
-      data: {
-        plat_nomor: createMotorDto.plat_nomor,
-        merk: createMotorDto.merk,
-        model: createMotorDto.model,
-        tahun: createMotorDto.tahun,
-        harga: createMotorDto.harga,
-        no_gsm: createMotorDto.no_gsm,
-        imei: createMotorDto.imei,
-        status: createMotorDto.status ?? this.STATUS.TERSEDIA,
-      },
-      select: {
-        id: true,
-        plat_nomor: true,
-        merk: true,
-        model: true,
-        tahun: true,
-        harga: true,
-        no_gsm: true,
-        imei: true,
-        status: true,
-        created_at: true,
-        updated_at: true,
-      },
-    });
-  }
-
-  async update(id: number, updateMotorDto: UpdateMotorDto) {
-    // Pastikan motor ada
-    const existingMotor = await this.prisma.motor.findUnique({
-      where: { id },
-    });
+  /**
+   * Update motor dengan WebSocket event
+   */
+  async update(
+    id: number,
+    updateMotorDto: UpdateMotorDto,
+  ): Promise<MotorResponseDto> {
+    const existingMotor = await this.motorCoreService.findOne(id);
 
     if (!existingMotor) {
       throw new NotFoundException(`Motor dengan ID ${id} tidak ditemukan`);
     }
 
-    // Cek apakah plat_nomor baru bentrok dengan motor lain
-    if (
-      updateMotorDto.plat_nomor &&
-      updateMotorDto.plat_nomor !== existingMotor.plat_nomor
-    ) {
-      const motorWithSamePlat = await this.prisma.motor.findUnique({
-        where: { plat_nomor: updateMotorDto.plat_nomor },
-      });
+    await this.motorValidatorService.validateUpdateData(
+      existingMotor,
+      updateMotorDto,
+    );
 
-      if (motorWithSamePlat && motorWithSamePlat.id !== id) {
-        throw new ConflictException('Plat nomor sudah digunakan');
-      }
-    }
+    const updateData = this.motorValidatorService.buildUpdateData(
+      existingMotor,
+      updateMotorDto,
+    );
+    const motor = await this.motorCoreService.update(id, updateData);
 
-    // Jika IMEI diubah, validasi dengan IOPGPS
-    if (updateMotorDto.imei && updateMotorDto.imei !== existingMotor.imei) {
-      try {
-        const deviceInfo = await this.iopgpsService.getDeviceLocation(
-          updateMotorDto.imei,
-        );
-        if (deviceInfo.code !== 0) {
-          throw new BadRequestException(
-            `IMEI ${updateMotorDto.imei} tidak valid di sistem IOPGPS`,
-          );
-        }
-      } catch (error: unknown) {
-        const errorMessage = this.getErrorMessage(error);
-        throw new BadRequestException(
-          `Gagal memverifikasi IMEI: ${errorMessage}`,
-        );
-      }
-    }
-
-    return this.prisma.motor.update({
-      where: { id },
-      data: {
-        plat_nomor: updateMotorDto.plat_nomor,
-        merk: updateMotorDto.merk,
-        model: updateMotorDto.model,
-        tahun: updateMotorDto.tahun,
-        harga: updateMotorDto.harga,
-        no_gsm: updateMotorDto.no_gsm,
-        imei: updateMotorDto.imei,
-        status: updateMotorDto.status,
-      },
-      select: {
-        id: true,
-        plat_nomor: true,
-        merk: true,
-        model: true,
-        tahun: true,
-        harga: true,
-        no_gsm: true,
-        imei: true,
-        status: true,
-        created_at: true,
-        updated_at: true,
-      },
-    });
+    return MotorResponseDto.fromPrisma(motor);
   }
 
-  async remove(id: number) {
-    const motor = await this.prisma.motor.findUnique({
-      where: { id },
-      include: {
-        sewas: {
-          where: {
-            status: 'Aktif',
-          },
-        },
-      },
-    });
-
+  /**
+   * Delete motor dengan WebSocket event
+   */
+  async remove(id: number): Promise<{ message: string }> {
+    const motor = await this.motorCoreService.findOne(id);
     if (!motor) {
       throw new NotFoundException(`Motor dengan ID ${id} tidak ditemukan`);
     }
 
-    if (motor.status === this.STATUS.DISEWA || motor.sewas.length > 0) {
-      throw new BadRequestException(
-        'Tidak dapat menghapus motor yang sedang disewa.',
-      );
-    }
+    await this.motorCoreService.remove(id);
 
-    // Hapus semua sewa terkait (jika ada)
-    await this.prisma.sewa.deleteMany({
-      where: { motor_id: id },
-    });
+    // Emit WebSocket event
+    this.motorEventsService.emitMotorDeleted(id, motor.plat_nomor);
 
-    // Hapus motor
-    await this.prisma.motor.delete({
-      where: { id },
-    });
-
-    return { message: 'Motor berhasil dihapus.' };
+    return { message: 'Motor berhasil dihapus' };
   }
 
-  // ✅ Method untuk mendapatkan mileage dari IOPGPS
-  async getMileage(imei: string, startTime: number, endTime: number) {
-    if (!imei) {
-      throw new BadRequestException(
-        'IMEI diperlukan untuk mendapatkan mileage',
-      );
+  /**
+   * Update status dengan WebSocket event
+   */
+  async updateStatus(id: number, status: string): Promise<MotorResponseDto> {
+    const existingMotor = await this.motorCoreService.findOne(id);
+    if (!existingMotor) {
+      throw new NotFoundException(`Motor dengan ID ${id} tidak ditemukan`);
     }
 
-    try {
-      const mileage = await this.iopgpsService.getDeviceMileage(
-        imei,
-        startTime,
-        endTime,
-      );
-      return {
-        success: true,
-        data: mileage,
-        message: 'Data mileage berhasil diambil',
-      };
-    } catch (error: unknown) {
-      const errorMessage = this.getErrorMessage(error);
-      throw new BadRequestException(
-        `Gagal mengambil data mileage: ${errorMessage}`,
-      );
-    }
+    const oldStatus = existingMotor.status;
+    const motor = await this.motorCoreService.updateStatus(id, status);
+
+    // Emit WebSocket event untuk status change
+    const statusUpdate: MotorStatusUpdate = {
+      motorId: id,
+      plat_nomor: motor.plat_nomor,
+      oldStatus,
+      newStatus: status,
+      timestamp: new Date().toISOString(),
+    };
+    this.motorEventsService.emitStatusUpdate(statusUpdate);
+
+    return MotorResponseDto.fromPrisma(motor);
   }
 
-  // ✅ Method untuk sync lokasi manual
-  async syncMotorLocation(motorId: number) {
-    const motor = await this.prisma.motor.findUnique({
-      where: { id: motorId },
-      select: { id: true, imei: true, plat_nomor: true },
-    });
+  // ========== SERVICE METHODS DENGAN WEB SOCKET ==========
 
-    if (!motor) {
-      throw new NotFoundException(`Motor dengan ID ${motorId} tidak ditemukan`);
+  async markForService(
+    id: number,
+    serviceNotes?: string,
+  ): Promise<MotorResponseDto> {
+    const existingMotor = await this.motorCoreService.findOne(id);
+    if (!existingMotor) {
+      throw new NotFoundException(`Motor dengan ID ${id} tidak ditemukan`);
     }
 
-    if (!motor.imei) {
-      throw new BadRequestException('Motor tidak memiliki IMEI');
+    const motor = await this.motorServiceService.markForService(
+      id,
+      serviceNotes,
+    );
+
+    // Emit WebSocket event untuk status change
+    const statusUpdate: MotorStatusUpdate = {
+      motorId: id,
+      plat_nomor: motor.plat_nomor,
+      oldStatus: existingMotor.status,
+      newStatus: 'pending_perbaikan',
+      timestamp: new Date().toISOString(),
+    };
+    this.motorEventsService.emitStatusUpdate(statusUpdate);
+
+    // Juga emit service update event
+    const serviceUpdate: MotorServiceUpdate = {
+      motorId: id,
+      plat_nomor: motor.plat_nomor,
+      serviceStatus: 'pending',
+      notes: serviceNotes,
+      timestamp: new Date().toISOString(),
+    };
+    this.motorEventsService.emitServiceUpdate(serviceUpdate);
+
+    return MotorResponseDto.fromPrisma(motor);
+  }
+
+  async completeService(id: number): Promise<MotorResponseDto> {
+    const existingMotor = await this.motorCoreService.findOne(id);
+    if (!existingMotor) {
+      throw new NotFoundException(`Motor dengan ID ${id} tidak ditemukan`);
     }
 
-    try {
-      const location = await this.iopgpsService.getDeviceLocation(motor.imei);
+    const motor = await this.motorServiceService.completeService(id);
 
-      if (location.code === 0 && location.lat && location.lng) {
-        const updatedMotor = await this.prisma.motor.update({
-          where: { id: motorId },
-          data: {
-            lat: parseFloat(location.lat),
-            lng: parseFloat(location.lng),
-            last_update: location.gpsTime
-              ? new Date(location.gpsTime * 1000)
-              : new Date(),
+    // Emit WebSocket event
+    const serviceUpdate: MotorServiceUpdate = {
+      motorId: id,
+      plat_nomor: motor.plat_nomor,
+      serviceStatus: 'completed',
+      timestamp: new Date().toISOString(),
+    };
+    this.motorEventsService.emitServiceUpdate(serviceUpdate);
+
+    return MotorResponseDto.fromPrisma(motor);
+  }
+
+  async startService(
+    id: number,
+    technician: string,
+  ): Promise<MotorResponseDto> {
+    const existingMotor = await this.motorCoreService.findOne(id);
+    if (!existingMotor) {
+      throw new NotFoundException(`Motor dengan ID ${id} tidak ditemukan`);
+    }
+
+    const motor = await this.motorServiceService.startService(id, technician);
+
+    // Emit WebSocket event
+    const serviceUpdate: MotorServiceUpdate = {
+      motorId: id,
+      plat_nomor: motor.plat_nomor,
+      serviceStatus: 'in_progress',
+      serviceType: 'perbaikan',
+      technician,
+      timestamp: new Date().toISOString(),
+    };
+    this.motorEventsService.emitServiceUpdate(serviceUpdate);
+
+    return MotorResponseDto.fromPrisma(motor);
+  }
+
+  async cancelService(id: number): Promise<MotorResponseDto> {
+    const existingMotor = await this.motorCoreService.findOne(id);
+    if (!existingMotor) {
+      throw new NotFoundException(`Motor dengan ID ${id} tidak ditemukan`);
+    }
+
+    const motor = await this.motorServiceService.cancelService(id);
+
+    // Emit WebSocket event
+    const serviceUpdate: MotorServiceUpdate = {
+      motorId: id,
+      plat_nomor: motor.plat_nomor,
+      serviceStatus: 'cancelled',
+      timestamp: new Date().toISOString(),
+    };
+    this.motorEventsService.emitServiceUpdate(serviceUpdate);
+
+    return MotorResponseDto.fromPrisma(motor);
+  }
+
+  // ========== QUERY METHODS ==========
+
+  async findPendingService(): Promise<MotorResponseDto[]> {
+    const motors = await this.motorServiceService.findPendingService();
+    return motors.map((motor) => MotorResponseDto.fromPrisma(motor));
+  }
+
+  async findInService(): Promise<MotorResponseDto[]> {
+    const motors = await this.motorServiceService.findInService();
+    return motors.map((motor) => MotorResponseDto.fromPrisma(motor));
+  }
+
+  async findCompletedService(): Promise<MotorResponseDto[]> {
+    const motors = await this.prisma.motor.findMany({
+      where: {
+        service_records: {
+          some: {
+            status: 'completed',
           },
+        },
+      },
+      include: {
+        service_records: {
+          where: { status: 'completed' },
+          orderBy: { service_date: 'desc' },
+          take: 1,
+        },
+      },
+      orderBy: { created_at: 'desc' },
+    });
+
+    return motors.map((motor) => MotorResponseDto.fromPrisma(motor));
+  }
+
+  async findByStatus(status: string): Promise<MotorResponseDto[]> {
+    const motors = await this.motorCoreService.findByStatus(status);
+    return motors.map((motor) => MotorResponseDto.fromPrisma(motor));
+  }
+
+  async findMotorsNeedingService(
+    mileageThreshold: number = SERVICE_CONFIG.DEFAULT_MILEAGE_THRESHOLD,
+  ): Promise<MotorResponseDto[]> {
+    const motors =
+      await this.motorCoreService.findMotorsNeedingService(mileageThreshold);
+    return motors.map((motor) => MotorResponseDto.fromPrisma(motor));
+  }
+
+  // ========== SEARCH & STATISTICS ==========
+
+  async searchByPlateNumber(plate: string): Promise<MotorResponseDto[]> {
+    const motors = await this.prisma.motor.findMany({
+      where: {
+        plat_nomor: {
+          contains: plate,
+        },
+      },
+      orderBy: { created_at: 'desc' },
+    });
+
+    // Filter case-insensitive secara manual
+    const filteredMotors = motors.filter((motor) =>
+      motor.plat_nomor.toLowerCase().includes(plate.toLowerCase()),
+    );
+
+    return filteredMotors.map((motor) => MotorResponseDto.fromPrisma(motor));
+  }
+
+  async getMotorStatistics(): Promise<MotorStatisticsResponseDto> {
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(
+      thirtyDaysAgo.getDate() - SERVICE_CONFIG.SERVICE_REMINDER_DAYS,
+    );
+
+    const [
+      totalMotors,
+      availableMotors,
+      rentedMotors,
+      maintenanceMotors,
+      pendingServiceMotors,
+      motorsNeedingService,
+    ] = await Promise.all([
+      this.prisma.motor.count(),
+      this.prisma.motor.count({ where: { status: MOTOR_STATUS.TERSEDIA } }),
+      this.prisma.motor.count({ where: { status: MOTOR_STATUS.DISEWA } }),
+      this.prisma.motor.count({ where: { status: MOTOR_STATUS.PERBAIKAN } }),
+      this.prisma.motor.count({
+        where: { status: MOTOR_STATUS.PENDING_PERBAIKAN },
+      }),
+      this.prisma.motor.count({
+        where: {
+          status: MOTOR_STATUS.TERSEDIA,
+          OR: [
+            {
+              total_mileage: { gte: SERVICE_CONFIG.DEFAULT_MILEAGE_THRESHOLD },
+            },
+            { last_service_date: { lte: thirtyDaysAgo } },
+          ],
+        },
+      }),
+    ]);
+
+    return MotorStatisticsResponseDto.fromCounts({
+      total: totalMotors,
+      available: availableMotors,
+      rented: rentedMotors,
+      maintenance: maintenanceMotors,
+      pending_service: pendingServiceMotors,
+      needing_service: motorsNeedingService,
+    });
+  }
+
+  // ========== PRIVATE HELPER METHODS ==========
+
+  /**
+   * Perform Automatic Initial Sync untuk motor baru
+   */
+  private async performInitialSync(
+    motorId: number,
+    imei: string,
+    platNomor: string,
+  ): Promise<void> {
+    try {
+      this.logger.log(
+        `Starting automatic initial sync for motor ${platNomor} (IMEI: ${imei})`,
+      );
+
+      // 1. Sync GPS location data
+      await this.syncGpsData(motorId, imei, platNomor);
+
+      // 2. Sync mileage data
+      await this.syncMileageData(motorId, platNomor);
+
+      this.logger.log(
+        `Automatic initial sync completed for motor ${platNomor}`,
+      );
+
+      // Emit sync completion event
+      this.motorEventsService.emitMileageSyncComplete(
+        motorId,
+        true,
+        `Automatic initial sync completed for ${platNomor}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Automatic initial sync failed for motor ${platNomor}:`,
+        error,
+      );
+
+      // Emit sync failure event
+      this.motorEventsService.emitMileageSyncComplete(
+        motorId,
+        false,
+        `Automatic initial sync failed: ${error.message}`,
+      );
+    }
+  }
+
+  /**
+   * Sync GPS data untuk motor baru
+   */
+  private async syncGpsData(
+    motorId: number,
+    imei: string,
+    platNomor: string,
+  ): Promise<void> {
+    try {
+      // Gunakan motor-gps service untuk sync lokasi
+      const motorsWithGps = await this.motorGpsService.findWithGps();
+      const motorGpsData = motorsWithGps.find((m) => m.imei === imei);
+
+      if (motorGpsData?.iopgps_data) {
+        // Type-safe access ke data GPS
+        const iopgpsData = motorGpsData.iopgps_data as any;
+
+        // Update motor dengan data GPS yang didapat - dengan safety check
+        const updateData: any = {
+          last_update: new Date(),
+          gps_status: iopgpsData?.status ?? 'Unknown', // ✅ ikut data asli dari IOPGPS
+        };
+
+        // Safely access nested properties
+        if (iopgpsData.location?.lat && iopgpsData.location?.lng) {
+          updateData.lat = iopgpsData.location.lat;
+          updateData.lng = iopgpsData.location.lng;
+        } else if (iopgpsData.lat && iopgpsData.lng) {
+          // Fallback untuk struktur data yang berbeda
+          updateData.lat = iopgpsData.lat;
+          updateData.lng = iopgpsData.lng;
+        }
+
+        if (iopgpsData.location?.address) {
+          updateData.last_known_address = iopgpsData.location.address;
+        } else if (iopgpsData.address) {
+          // Fallback untuk struktur data yang berbeda
+          updateData.last_known_address = iopgpsData.address;
+        }
+
+        await this.prisma.motor.update({
+          where: { id: motorId },
+          data: updateData,
         });
 
-        return {
-          success: true,
-          data: updatedMotor,
-          message: 'Lokasi motor berhasil disinkronisasi',
-        };
+        this.logger.debug(`GPS data synced for motor ${platNomor}`);
       } else {
-        throw new Error('Tidak ada data lokasi yang valid dari IOPGPS');
+        this.logger.debug(
+          `No GPS data found for motor ${platNomor} with IMEI ${imei}`,
+        );
       }
-    } catch (error: unknown) {
-      const errorMessage = this.getErrorMessage(error);
-      throw new BadRequestException(
-        `Gagal sinkronisasi lokasi: ${errorMessage}`,
-      );
+    } catch (error) {
+      this.logger.warn(`GPS sync failed for motor ${platNomor}:`, error);
+      // Jangan throw error, biarkan sync mileage tetap berjalan
     }
   }
 
-  // ✅ Method untuk mendapatkan riwayat perjalanan
-  async getTrackHistory(imei: string, startTime: number, endTime?: number) {
-    if (!imei) {
-      throw new BadRequestException(
-        'IMEI diperlukan untuk mendapatkan riwayat perjalanan',
-      );
-    }
-
+  /**
+   * Sync mileage data untuk motor baru - VERSI LEBIH AMAN
+   */
+  private async syncMileageData(
+    motorId: number,
+    platNomor: string,
+  ): Promise<void> {
     try {
-      const trackHistory = await this.iopgpsService.getDeviceTrackHistory(
-        imei,
-        startTime,
-        endTime,
+      // Gunakan mileage service untuk sync data mileage
+      // Tambahkan timeout untuk mencegah blocking terlalu lama
+      const syncPromise = this.motorMileageService.syncMileageData(motorId);
+
+      const timeoutPromise = new Promise<{ success: boolean; message: string }>(
+        (resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                success: false,
+                message: 'Sync timeout after 30 seconds',
+              }),
+            30000,
+          ),
       );
-      return {
-        success: true,
-        data: trackHistory,
-        message: 'Riwayat perjalanan berhasil diambil',
-      };
-    } catch (error: unknown) {
-      const errorMessage = this.getErrorMessage(error);
-      throw new BadRequestException(
-        `Gagal mengambil riwayat perjalanan: ${errorMessage}`,
-      );
+
+      const syncResult = await Promise.race([syncPromise, timeoutPromise]);
+
+      if (syncResult.success) {
+        this.logger.log(
+          `Mileage data synced for motor ${platNomor}: ${syncResult.message}`,
+        );
+      } else {
+        this.logger.warn(
+          `Mileage sync completed with issues for motor ${platNomor}: ${syncResult.message}`,
+        );
+      }
+    } catch (error) {
+      this.logger.warn(`Mileage sync failed for motor ${platNomor}:`, error);
+      // Jangan throw error, biarkan proses create motor tetap berhasil
     }
+  }
+
+  private convertToDetailDto(
+    motor: MotorWithRelations,
+  ): MotorDetailResponseDto {
+    // Manual conversion untuk handle type mismatch
+    const baseDto = MotorResponseDto.fromPrisma(motor);
+    const detailDto = Object.assign(new MotorDetailResponseDto(), baseDto);
+
+    // Convert relations manually dengan type safety
+    detailDto.mileage_history =
+      motor.mileage_history?.map((item: MileageHistoryItem) => ({
+        id: item.id,
+        motor_id: item.motor_id,
+        imei: item.imei,
+        start_time: item.start_time.toISOString(),
+        end_time: item.end_time.toISOString(),
+        distance_km: safeConvertDecimal(item.distance_km),
+        run_time_seconds: item.run_time_seconds,
+        average_speed_kmh: safeConvertDecimal(item.average_speed_kmh),
+        period_date: item.period_date.toISOString(),
+        created_at: item.created_at.toISOString(),
+        updated_at: item.updated_at.toISOString(),
+      })) || [];
+
+    detailDto.location_cache =
+      motor.location_cache?.map((item: LocationCacheItem) => ({
+        id: item.id,
+        motor_id: item.motor_id,
+        imei: item.imei,
+        lat: item.lat,
+        lng: item.lng,
+        address: item.address || undefined,
+        speed: item.speed ? safeConvertDecimal(item.speed) : undefined,
+        direction: item.direction || undefined,
+        gps_time: item.gps_time.toISOString(),
+        location_type: item.location_type,
+        created_at: item.created_at.toISOString(),
+      })) || [];
+
+    detailDto.service_records =
+      motor.service_records?.map((record: ServiceRecordItem) => ({
+        id: record.id,
+        motor_id: record.motor_id,
+        status: record.status,
+        service_type: record.service_type,
+        service_date: record.service_date.toISOString(),
+        estimated_completion: record.estimated_completion?.toISOString(),
+        actual_completion: record.actual_completion?.toISOString(),
+        service_location: record.service_location,
+        service_technician: record.service_technician,
+        parts: safeConvertJsonToStringArray(record.parts),
+        services: safeConvertJsonToStringArray(record.services),
+        estimated_cost: record.estimated_cost
+          ? safeConvertDecimal(record.estimated_cost)
+          : undefined,
+        actual_cost: record.actual_cost
+          ? safeConvertDecimal(record.actual_cost)
+          : undefined,
+        notes: record.notes || undefined,
+        service_notes: record.service_notes || undefined,
+        mileage_at_service: record.mileage_at_service
+          ? safeConvertDecimal(record.mileage_at_service)
+          : undefined,
+        created_at: record.created_at.toISOString(),
+        updated_at: record.updated_at.toISOString(),
+      })) || [];
+
+    detailDto.sewas =
+      motor.sewas?.map((sewa: SewaItem) => ({
+        id: sewa.id,
+        penyewa: {
+          id: sewa.penyewa.id,
+          nama: sewa.penyewa.nama,
+          no_whatsapp: sewa.penyewa.no_whatsapp,
+        },
+      })) || [];
+
+    return detailDto;
+  }
+
+  private async enhanceWithGpsData(
+    id: number,
+    motorDto: MotorDetailResponseDto,
+  ): Promise<void> {
+    try {
+      const motorsWithGps = await this.motorGpsService.findWithGps();
+      const motorWithGps = motorsWithGps.find((m) => m.id === id);
+
+      if (motorWithGps?.iopgps_data) {
+        motorDto.iopgps_data = motorWithGps.iopgps_data;
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to enhance motor ${id} with GPS data:`, error);
+      // Jangan throw error, biarkan response tetap berhasil tanpa data GPS
+    }
+  }
+
+  // ========== SERVICE ACCESSORS ==========
+
+  getGpsService(): MotorGpsService {
+    return this.motorGpsService;
+  }
+
+  getMileageService(): MotorMileageService {
+    return this.motorMileageService;
   }
 }

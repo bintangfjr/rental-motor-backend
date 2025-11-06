@@ -1,17 +1,15 @@
-import { IsOptional, IsString, IsNumber } from 'class-validator';
+import { IsOptional, IsString, IsNumberString } from 'class-validator';
 
 export class DeviceListDto {
   @IsOptional()
   @IsString()
-  account?: string;
-
-  @IsNumber()
-  pageNum: number;
-
-  @IsNumber()
-  pageSize: number;
+  id?: string;
 
   @IsOptional()
-  @IsString()
-  lang?: string; // default: 'en'
+  @IsNumberString()
+  currentPage?: string = '1'; // Optional dengan default
+
+  @IsOptional()
+  @IsNumberString()
+  pageSize?: string = '20'; // Optional dengan default
 }

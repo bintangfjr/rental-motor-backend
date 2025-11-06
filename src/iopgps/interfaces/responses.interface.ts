@@ -13,12 +13,12 @@ export interface BaseIopgpsResponse {
  * Authentication response
  */
 export interface IopgpsAuthResponse extends BaseIopgpsResponse {
-  accessToken?: string;
+  accessToken?: string; // ✅ Sesuai dokumentasi: accessToken
   expiresIn?: number;
 }
 
 /**
- * Vehicle status response
+ * Vehicle status response (v2)
  */
 export interface VehicleStatusResponse extends BaseIopgpsResponse {
   data?: VehicleStatus[];
@@ -53,16 +53,19 @@ export interface DeviceLocationResponse extends BaseIopgpsResponse {
   lat?: string;
   address?: string;
   gpsTime?: number;
+  message?: string;
   speed?: number;
   direction?: number;
   locType?: string;
+  vehicleStatus?: string;
+  gpsStatus?: 'Online' | 'Offline' | 'static';
 }
 
 // Alias untuk compatibility dengan kode yang sudah ada
 export type DeviceLocation = DeviceLocationResponse;
 
 /**
- * Device detail response
+ * Device detail response (GET /api/device/detail)
  */
 export interface DeviceDetailResponse extends BaseIopgpsResponse {
   data?: DeviceDetail;
@@ -113,59 +116,7 @@ export interface DeviceBrief {
 }
 
 /**
- * Device track history response
- */
-export interface DeviceTrackResponse extends BaseIopgpsResponse {
-  data?: TrackPoint[];
-}
-
-/**
- * Individual track point
- */
-export interface TrackPoint {
-  imei: string;
-  lat: number;
-  lng: number;
-  speed: number;
-  direction: number;
-  gpsTime: number;
-  locType: string;
-  address?: string;
-  mileage?: number;
-}
-
-/**
- * Mileage statistics response
- */
-export interface MileageResponse extends BaseIopgpsResponse {
-  runTime?: number;
-  miles?: number;
-  totalMiles?: number;
-}
-
-/**
- * Device alarm records response
- */
-export interface AlarmResponse extends BaseIopgpsResponse {
-  details?: AlarmRecord[];
-}
-
-/**
- * Individual alarm record
- */
-export interface AlarmRecord {
-  imei: string;
-  alarmType: string;
-  alarmTime: number;
-  lat: number;
-  lng: number;
-  speed: number;
-  direction: number;
-  address?: string;
-}
-
-/**
- * Device list paginated response
+ * Device list paginated response (GET /api/device)
  */
 export interface DeviceListResponse extends BaseIopgpsResponse {
   data?: DeviceListItem[];
@@ -199,6 +150,51 @@ export interface PaginationInfo {
   pageSize: number;
   totalCount: number;
   totalPage: number;
+}
+
+/**
+ * Individual track point
+ */
+export interface TrackPoint {
+  imei: string;
+  lat: number;
+  lng: number;
+  speed: number;
+  direction: number;
+  gpsTime: number;
+  locType: string;
+  address?: string;
+  mileage?: number;
+}
+
+/**
+ * Mileage statistics response (GET /api/device/miles)
+ */
+export interface MileageResponse extends BaseIopgpsResponse {
+  runTime?: number; // Running time, unit seconds
+  miles?: number; // Mileage in kilometers
+  totalMiles?: number;
+}
+
+/**
+ * Device alarm records response
+ */
+export interface AlarmResponse extends BaseIopgpsResponse {
+  details?: AlarmRecord[];
+}
+
+/**
+ * Individual alarm record
+ */
+export interface AlarmRecord {
+  imei: string;
+  alarmType: string;
+  alarmTime: number;
+  lat: number;
+  lng: number;
+  speed: number;
+  direction: number;
+  address?: string;
 }
 
 /**
@@ -273,42 +269,7 @@ export interface DeviceStatusStatsResponse extends BaseIopgpsResponse {
   total?: number;
 }
 
-// Configuration interfaces
-export interface IopgpsConfig {
-  appid: string;
-  secretKey: string;
-  baseUrl: string;
-  timeout: number;
-  maxRetries: number;
-}
-
-export interface CacheConfig {
-  ttl: number;
-  max: number;
-  checkperiod?: number;
-}
-
-export interface SyncConfig {
-  interval: number;
-  batchSize: number;
-  maxLocationAge: number;
-}
-
-export interface IopgpsHealth {
-  service: 'healthy' | 'degraded' | 'unhealthy';
-  token: boolean;
-  api: boolean;
-  database: boolean;
-  lastSync?: Date;
-  stats: {
-    totalMotors: number;
-    withImei: number;
-    synced: number;
-    failed: number;
-  };
-}
-
-// Response interfaces for our backend integration
+// ========== CUSTOM INTERFACES FOR YOUR BACKEND ==========
 
 /**
  * Enhanced motor response with GPS status
@@ -329,9 +290,23 @@ export interface MotorWithGpsStatus {
   battery_level?: number;
   signal_strength?: number;
 }
+export interface MotorWithLocationStatus {
+  id: number;
+  plat_nomor: string;
+  merk: string;
+  model: string;
+  status: string;
+  imei: string | null;
+  lat: number | null;
+  lng: number | null;
+  last_update: Date | null;
+  gps_status?: string;
+  location_status: string;
+  last_update_age: number | null;
+}
 
 /**
- * Mileage response for frontend
+ * Mileage data for frontend
  */
 export interface MileageData {
   imei: string;
@@ -347,7 +322,7 @@ export interface MileageData {
 }
 
 /**
- * Track history response for frontend
+ * Track history data for frontend
  */
 export interface TrackHistoryData {
   imei: string;
@@ -377,12 +352,18 @@ export interface IopgpsHealthStatus {
   connectedDevices: number;
   totalDevices: number;
   responseTime?: number;
+  // Tambahkan details sebagai optional property
+  details?: {
+    totalMotors: number;
+    motorsWithImei: number;
+    motorsWithGps: number;
+  };
 }
 
 /**
  * Sync operation result
  */
-export interface SyncResult {
+export interface SyncOperationResult {
   success: number;
   failed: number;
   total: number;
@@ -444,7 +425,6 @@ export interface DashboardGpsStatus {
 }
 
 // Enum for consistent status values
-
 export enum GpsStatus {
   REALTIME = 'realtime',
   CACHED = 'cached',
@@ -473,7 +453,6 @@ export enum GpsDeviceStatus {
 }
 
 // Response wrapper for consistent API responses
-
 export interface ApiResponse<T> {
   success: boolean;
   data?: T;
@@ -486,6 +465,8 @@ export interface ApiResponse<T> {
     total?: number;
     source?: 'iopgps' | 'database' | 'cache';
     cached?: boolean;
+    // Tambahkan properties flexible untuk metadata tambahan
+    [key: string]: string | number | boolean | undefined;
   };
 }
 
@@ -502,4 +483,39 @@ export interface BulkOperationResult {
     message?: string;
     error?: string;
   }[];
+}
+
+// Configuration interfaces
+export interface IopgpsConfig {
+  appid: string;
+  secretKey: string;
+  baseUrl: string;
+  timeout: number;
+  maxRetries: number;
+}
+export interface TokenInfo {
+  hasToken: boolean;
+  refreshInProgress: boolean;
+  appidConfigured: boolean;
+  secretKeyConfigured: boolean;
+  tokenPreview?: string;
+  tokenLength?: number;
+  // Tambahkan property baru untuk rate limit info
+  rateLimitInfo?: {
+    timeSinceLastCall: number;
+    canMakeAuthCall: boolean;
+    pendingPromise: boolean;
+  };
+}
+
+export interface CacheConfig {
+  ttl: number;
+  max: number;
+  checkperiod?: number;
+}
+
+export interface SyncConfig {
+  interval: number;
+  batchSize: number;
+  maxLocationAge: number;
 }

@@ -1,5 +1,10 @@
-// src/iopgps/dto/mileage.dto.ts (file terpisah)
-import { IsNotEmpty, IsNumber, IsString, IsOptional } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsString,
+  IsOptional,
+  IsNumber,
+  Min,
+} from 'class-validator';
 
 export class MileageDto {
   @IsString()
@@ -8,9 +13,11 @@ export class MileageDto {
 
   @IsNumber()
   @IsNotEmpty()
-  startTime: number;
+  @Min(1)
+  startTime: string;
 
   @IsOptional()
   @IsNumber()
-  endTime?: number; // Opsional, default ke waktu sekarang
+  @Min(1)
+  endTime?: string;
 }

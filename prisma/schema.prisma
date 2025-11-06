@@ -15,36 +15,40 @@ model Admin {
   password       String    @db.VarChar(255)
   is_super_admin Boolean   @default(false)
   deleted_at     DateTime?
-  
-  // ✅ FIXED: Gunakan now() bukan dbgenerated
-  created_at     DateTime  @default(now()) @map("created_at")
-  updated_at     DateTime  @updatedAt @map("updated_at")
-  
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
   sewas          Sewa[]
 
   @@map("admins")
 }
 
 model Motor {
-  id          Int       @id @default(autoincrement())
-  plat_nomor  String    @unique @db.VarChar(20)
-  merk        String    @db.VarChar(255)
-  model       String    @db.VarChar(255)
-  tahun       Int
-  harga       Int
-  no_gsm      String?   @db.VarChar(20)
-  imei        String?   @db.VarChar(20)
-  status      String    @db.VarChar(20)
-  device_id   String?   @db.VarChar(255)
-  lat         Float?
-  lng         Float?
-  last_update DateTime?
-  
-  // ✅ FIXED: Gunakan now() bukan dbgenerated
-  created_at  DateTime  @default(now()) @map("created_at")
-  updated_at  DateTime  @updatedAt @map("updated_at")
-  
-  sewas       Sewa[]
+  id                 Int                   @id @default(autoincrement())
+  plat_nomor         String                @unique @db.VarChar(20)
+  merk               String                @db.VarChar(255)
+  model              String                @db.VarChar(255)
+  tahun              Int
+  harga              Int
+  no_gsm             String?               @db.VarChar(20)
+  imei               String?               @db.VarChar(20)
+  status             String                @db.VarChar(20)
+  device_id          String?               @db.VarChar(255)
+  lat                Float?
+  lng                Float?
+  last_update        DateTime?
+  created_at         DateTime              @default(now())
+  updated_at         DateTime              @updatedAt
+  gps_status         motors_gps_status     @default(NoImei)
+  last_known_address String?               @db.Text
+  last_mileage_sync  DateTime?
+  last_service_date  DateTime?
+  service_notes      String?               @db.Text
+  service_technician String?               @db.VarChar(255)
+  total_mileage      Decimal?              @default(0.00) @db.Decimal(10, 2)
+  location_cache     MotorLocationCache[]
+  mileage_history    MotorMileageHistory[]
+  service_records    ServiceRecord[]
+  sewas              Sewa[]
 
   @@map("motors")
 }
@@ -53,70 +57,77 @@ model Penyewa {
   id             Int      @id @default(autoincrement())
   nama           String   @db.VarChar(255)
   alamat         String?  @db.Text
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
   foto_ktp       String?  @db.VarChar(255)
   is_blacklisted Boolean  @default(false)
   no_whatsapp    String   @unique @db.VarChar(20)
-  
-  // ✅ FIXED: Gunakan now() bukan dbgenerated
-  created_at     DateTime @default(now()) @map("created_at")
-  updated_at     DateTime @updatedAt @map("updated_at")
-  
   sewas          Sewa[]
 
   @@map("penyewas")
 }
 
 model Sewa {
-  id                Int       @id @default(autoincrement())
-  motor_id          Int
-  penyewa_id        Int
-  admin_id          Int
-  status            String    @db.VarChar(20)
-  jaminan           String?   @db.VarChar(255)
-  pembayaran        String?   @db.VarChar(50)
-  durasi_sewa       Int
-  tgl_kembali       DateTime
-  tgl_sewa          DateTime
-  total_harga       Int
-  status_notifikasi String?   @db.VarChar(20)
-  satuan_durasi     String    @db.VarChar(20) @default("hari")
-  additional_costs Json?
-  catatan_tambahan  String?   @db.Text
-  
-  
-  // ✅ FIXED: Gunakan now() bukan dbgenerated
-  created_at        DateTime  @default(now()) @map("created_at")
-  updated_at        DateTime  @updatedAt @map("updated_at")
-  
-  histories         History[]
-  
-  admin             Admin     @relation(fields: [admin_id], references: [id], onDelete: Cascade, map: "fk_sewa_admin")
-  motor             Motor     @relation(fields: [motor_id], references: [id], onDelete: Cascade, map: "fk_sewa_motor")
-  penyewa           Penyewa   @relation(fields: [penyewa_id], references: [id], onDelete: Cascade, map: "fk_sewa_penyewa")
+  id                     Int                    @id @default(autoincrement())
+  motor_id               Int
+  penyewa_id             Int
+  admin_id               Int
+  status                 String                 @db.VarChar(20)
+  jaminan                String?                @db.VarChar(255)
+  pembayaran             String?                @db.VarChar(50)
+  created_at             DateTime               @default(now())
+  updated_at             DateTime               @updatedAt
+  durasi_sewa            Int
+  tgl_kembali            DateTime
+  tgl_sewa               DateTime
+  total_harga            Int
+  status_notifikasi      String?                @db.VarChar(20)
+  satuan_durasi          String                 @default("hari") @db.VarChar(20)
+  additional_costs       String?                @db.LongText
+  catatan_tambahan       String?                @db.Text
+  admin                  Admin                  @relation(fields: [admin_id], references: [id], onDelete: Cascade)
+  motor                  Motor                  @relation(fields: [motor_id], references: [id], onDelete: Cascade)
+  penyewa                Penyewa                @relation(fields: [penyewa_id], references: [id], onDelete: Cascade)
+  whatsapp_notifications WhatsAppNotification[]
 
-  @@index([admin_id], map: "fk_sewa_admin")
-  @@index([motor_id], map: "fk_sewa_motor")
-  @@index([penyewa_id], map: "fk_sewa_penyewa")
+  @@index([admin_id], map: "sewas_admin_id_fkey")
+  @@index([motor_id], map: "sewas_motor_id_fkey")
+  @@index([penyewa_id], map: "sewas_penyewa_id_fkey")
   @@map("sewas")
 }
 
 model History {
-  id                   Int      @id @default(autoincrement())
-  sewa_id              Int
-  tgl_selesai          DateTime
-  status_selesai       String   @db.VarChar(20)
-  harga                Int
-  denda                Int
-  catatan              String?  @db.VarChar(500)
-  keterlambatan_menit  Int?     @default(0)
-  
-  // ✅ FIXED: Gunakan now() bukan dbgenerated
-  created_at           DateTime @default(now()) @map("created_at")
-  updated_at           DateTime @updatedAt @map("updated_at")
-  
-  sewa                 Sewa     @relation(fields: [sewa_id], references: [id], onDelete: Cascade, map: "fk_history_sewa")
+  id                  Int      @id @default(autoincrement())
+  sewa_id             Int      // Simpan ID asli untuk referensi
+  tgl_selesai         DateTime
+  status_selesai      String   @db.VarChar(20)
+  harga               Int
+  denda               Int
+  catatan             String?  @db.VarChar(500)
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+  keterlambatan_menit Int?     @default(0)
 
-  @@index([sewa_id], map: "fk_history_sewa")
+  motor_plat          String   @db.VarChar(20)
+  motor_merk          String   @db.VarChar(255)
+  motor_model         String   @db.VarChar(255)
+  tahun_motor         Int
+  penyewa_nama        String   @db.VarChar(255)
+  penyewa_whatsapp    String   @db.VarChar(20)
+  admin_nama          String   @db.VarChar(255)
+  tgl_sewa            DateTime
+  tgl_kembali         DateTime
+  durasi_sewa         Int
+  satuan_durasi       String   @db.VarChar(20)
+  jaminan             String?  @db.VarChar(255)
+  pembayaran          String?  @db.VarChar(50)
+  additional_costs    String?  @db.LongText
+  catatan_tambahan    String?  @db.Text
+
+  @@index([sewa_id])
+  @@index([motor_plat])
+  @@index([penyewa_nama])
+  @@index([tgl_selesai])
   @@map("histories")
 }
 
@@ -127,11 +138,12 @@ model WhatsAppNotification {
   type       String   @db.VarChar(20)
   status     String   @db.VarChar(20)
   response   String?  @db.Text
-  
-  // ✅ FIXED: Gunakan now() bukan dbgenerated
-  created_at DateTime @default(now()) @map("created_at")
-  updated_at DateTime @updatedAt @map("updated_at")
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  sewa_id    Int?
+  sewas      Sewa?    @relation(fields: [sewa_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_whatsapp_notifications_sewa")
 
+  @@index([sewa_id], map: "fk_whatsapp_notifications_sewa")
   @@map("whatsapp_notifications")
 }
 
@@ -143,10 +155,97 @@ model Settings {
   group        String   @db.VarChar(50)
   description  String?  @db.VarChar(500)
   is_encrypted Boolean  @default(false)
-  
-  // ✅ FIXED: Gunakan now() bukan dbgenerated
-  created_at   DateTime @default(now()) @map("created_at")
-  updated_at   DateTime @updatedAt @map("updated_at")
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
 
   @@map("settings")
+}
+
+model ServiceRecord {
+  id                   Int           @id @default(autoincrement())
+  motor_id             Int
+  status               ServiceStatus @default(pending)
+  service_type         ServiceType   @default(rutin)
+  service_date         DateTime
+  estimated_completion DateTime?
+  actual_completion    DateTime?
+  service_location     String        @db.VarChar(255)
+  service_technician   String        @db.VarChar(255)
+  parts                String?       @db.LongText
+  services             String?       @db.LongText
+  estimated_cost       Decimal?      @default(0.00) @db.Decimal(10, 2)
+  actual_cost          Decimal?      @default(0.00) @db.Decimal(10, 2)
+  notes                String?       @db.Text
+  service_notes        String?       @db.Text
+  mileage_at_service   Decimal?      @db.Decimal(10, 2)
+  created_at           DateTime      @default(now())
+  updated_at           DateTime      @updatedAt
+  service_summary      String?       @db.Text
+  motor                Motor         @relation(fields: [motor_id], references: [id], onDelete: Cascade)
+
+  @@index([motor_id])
+  @@index([status])
+  @@index([service_date])
+  @@map("service_records")
+}
+
+model MotorMileageHistory {
+  id                Int      @id @default(autoincrement())
+  motor_id          Int
+  imei              String   @db.VarChar(20)
+  start_time        DateTime
+  end_time          DateTime
+  distance_km       Decimal  @db.Decimal(8, 2)
+  run_time_seconds  Int
+  average_speed_kmh Decimal  @db.Decimal(5, 2)
+  period_date       DateTime
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  motor             Motor    @relation(fields: [motor_id], references: [id], onDelete: Cascade)
+
+  @@index([motor_id, period_date])
+  @@index([imei, start_time, end_time])
+  @@index([motor_id, period_date], map: "motor_mileage_history_motor_period_idx")
+  @@map("motor_mileage_history")
+}
+
+model MotorLocationCache {
+  id            Int      @id @default(autoincrement())
+  motor_id      Int
+  imei          String   @db.VarChar(20)
+  lat           Float
+  lng           Float
+  address       String?  @db.Text
+  speed         Decimal? @default(0.00) @db.Decimal(5, 2)
+  direction     Int?     @default(0)
+  gps_time      DateTime
+  location_type String   @default("gps") @db.VarChar(20)
+  created_at    DateTime @default(now())
+  motor         Motor    @relation(fields: [motor_id], references: [id], onDelete: Cascade)
+
+  @@index([motor_id, imei])
+  @@index([gps_time])
+  @@index([motor_id, imei], map: "motor_location_cache_motor_imei_idx")
+  @@map("motor_location_cache")
+}
+
+enum ServiceStatus {
+  pending
+  in_progress
+  completed
+  cancelled
+}
+
+enum ServiceType {
+  rutin
+  berat
+  perbaikan
+  emergency
+}
+
+enum motors_gps_status {
+  Online
+  Offline
+  NoImei
+  Error
 }

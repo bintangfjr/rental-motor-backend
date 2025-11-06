@@ -1,4 +1,3 @@
-// src/motor/motor.controller.ts
 import {
   Controller,
   Get,
@@ -8,329 +7,339 @@ import {
   Body,
   Param,
   UseGuards,
-  HttpException,
-  HttpStatus,
-  Logger,
   Query,
+  ParseIntPipe,
+  DefaultValuePipe,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { MotorService } from './motor.service';
+import { MotorGpsService } from './motor-gps.service';
+import { MotorMileageService } from './motor-mileage.service';
 import { CreateMotorDto } from './dto/create-motor.dto';
 import { UpdateMotorDto } from './dto/update-motor.dto';
-import { MileageDto } from '../iopgps/dto/mileage.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
-// Interface untuk error Prisma
-interface PrismaError extends Error {
-  code?: string;
-}
-
-// Extended interface untuk error dengan message
-interface ErrorWithMessage {
+// Interface untuk response validate IMEI
+interface ValidateImeiResponse {
+  valid: boolean;
   message: string;
+  imei: string;
 }
 
-// Response interfaces untuk type safety
-interface ApiResponse<T> {
+interface ValidateImeiApiResponse {
   success: boolean;
-  data?: T;
-  message?: string;
-}
-
-interface MotorResponse {
-  id: number;
-  plat_nomor: string;
-  merk: string;
-  model: string;
-  tahun: number;
-  harga: number;
-  no_gsm?: string;
-  imei?: string;
-  status: string;
-  device_id?: string;
-  lat?: number;
-  lng?: number;
-  last_update?: Date;
-  created_at: Date;
-  updated_at: Date;
-}
-
-interface MotorWithSewaResponse extends MotorResponse {
-  sewas: Array<{
-    id: number;
-    penyewa: {
-      id: number;
-      nama: string;
-      no_whatsapp: string;
-    };
-  }>;
-}
-
-interface MotorGpsResponse {
-  id: number;
-  plat_nomor: string;
-  merk: string;
-  model: string;
-  status: string;
-  lat?: number;
-  lng?: number;
-  last_update?: Date;
-  imei?: string;
-  no_gsm?: string;
-  gps_status?: string;
-  location_source?: string;
-}
-
-interface MileageApiResponse {
-  success: boolean;
-  data: any;
+  data?: ValidateImeiResponse;
+  error?: string;
   message: string;
-}
-
-interface SyncLocationResponse {
-  success: boolean;
-  data: any;
-  message: string;
-}
-
-interface TrackHistoryResponse {
-  success: boolean;
-  data: any;
-  message: string;
+  timestamp: Date;
 }
 
 @Controller('motors')
+@UseGuards(JwtAuthGuard)
 export class MotorController {
-  private readonly logger = new Logger(MotorController.name);
+  constructor(
+    private readonly motorService: MotorService,
+    private readonly motorGpsService: MotorGpsService,
+    private readonly motorMileageService: MotorMileageService,
+  ) {}
 
-  constructor(private readonly motorService: MotorService) {}
+  // ========== VALIDATE IMEI ENDPOINT ==========
+  @Get('validate-imei')
+  async validateImei(
+    @Query('imei') imei: string,
+  ): Promise<ValidateImeiApiResponse> {
+    await Promise.resolve();
 
-  @Get()
-  @UseGuards(JwtAuthGuard)
-  async findAll(): Promise<ApiResponse<MotorResponse[]>> {
-    try {
-      const motors = await this.motorService.findAll();
-      return { success: true, data: motors };
-    } catch (error: unknown) {
-      this.logger.error('Failed to fetch motors', error);
-      throw new HttpException(
-        'Failed to fetch motors',
-        HttpStatus.INTERNAL_SERVER_ERROR,
-      );
+    if (!imei || imei.trim() === '') {
+      return {
+        success: false,
+        error: 'IMEI parameter is required',
+        message: 'Validation failed',
+        timestamp: new Date(),
+      };
     }
+
+    // ✅ OPTIMASI: Gabungkan validasi
+    const isValidFormat = /^[0-9]{15}$/.test(imei);
+    if (!isValidFormat) {
+      return {
+        success: true,
+        data: {
+          valid: false,
+          message: 'IMEI must be exactly 15 digits',
+          imei: imei,
+        },
+        message: 'IMEI validation completed',
+        timestamp: new Date(),
+      };
+    }
+
+    const isValidLuhn = this.validateImeiLuhn(imei);
+    const isValid = isValidFormat && isValidLuhn;
+
+    return {
+      success: true,
+      data: {
+        valid: isValid,
+        message: isValid
+          ? 'IMEI is valid'
+          : 'IMEI failed Luhn algorithm validation',
+        imei: imei,
+      },
+      message: 'IMEI validation completed',
+      timestamp: new Date(),
+    };
   }
 
-  @Get('gps')
-  @UseGuards(JwtAuthGuard)
-  async getMotorsWithGps(): Promise<ApiResponse<MotorGpsResponse[]>> {
-    try {
-      const motors = await this.motorService.findWithGps();
-      return { success: true, data: motors };
-    } catch (error: unknown) {
-      this.logger.error('Failed to fetch motors with GPS', error);
-      throw new HttpException(
-        'Failed to fetch motors with GPS',
-        HttpStatus.INTERNAL_SERVER_ERROR,
-      );
-    }
+  // ========== BASIC CRUD ENDPOINTS ==========
+  @Get()
+  async findAll() {
+    // ✅ OPTIMASI: Langsung return tanpa variable intermediate
+    return {
+      success: true,
+      data: await this.motorService.findAll(),
+      timestamp: new Date(),
+    };
   }
 
   @Get(':id')
-  @UseGuards(JwtAuthGuard)
-  async findOne(
-    @Param('id') id: string,
-  ): Promise<ApiResponse<MotorWithSewaResponse>> {
-    try {
-      const motor = await this.motorService.findOne(+id);
-      if (!motor) {
-        throw new HttpException('Motor not found', HttpStatus.NOT_FOUND);
-      }
-      return { success: true, data: motor };
-    } catch (error: unknown) {
-      if (error instanceof HttpException) throw error;
-      this.logger.error(`Failed to fetch motor with id ${id}`, error);
-      throw new HttpException(
-        'Failed to fetch motor',
-        HttpStatus.INTERNAL_SERVER_ERROR,
-      );
-    }
+  async findOne(@Param('id', ParseIntPipe) id: number) {
+    return {
+      success: true,
+      data: await this.motorService.findOne(id),
+      timestamp: new Date(),
+    };
   }
 
   @Post()
-  @UseGuards(JwtAuthGuard)
-  async create(
-    @Body() createMotorDto: CreateMotorDto,
-  ): Promise<ApiResponse<MotorResponse>> {
-    try {
-      const motor = await this.motorService.create(createMotorDto);
-      return {
-        success: true,
-        data: motor,
-        message: 'Motor berhasil ditambahkan.',
-      };
-    } catch (error: unknown) {
-      const prismaError = error as PrismaError;
-      this.logger.error('Failed to create motor', prismaError);
-
-      if (prismaError.code === 'P2002') {
-        throw new HttpException(
-          'Plat nomor already exists',
-          HttpStatus.CONFLICT,
-        );
-      }
-
-      const errorMessage = this.getErrorMessage(error);
-      throw new HttpException(errorMessage, HttpStatus.INTERNAL_SERVER_ERROR);
-    }
+  async create(@Body() createMotorDto: CreateMotorDto) {
+    const motor = await this.motorService.create(createMotorDto);
+    return {
+      success: true,
+      data: motor,
+      message: 'Motor berhasil ditambahkan',
+      timestamp: new Date(),
+    };
   }
 
   @Put(':id')
-  @UseGuards(JwtAuthGuard)
   async update(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() updateMotorDto: UpdateMotorDto,
-  ): Promise<ApiResponse<MotorResponse>> {
-    try {
-      const motor = await this.motorService.update(+id, updateMotorDto);
-      return {
-        success: true,
-        data: motor,
-        message: 'Motor berhasil diperbarui.',
-      };
-    } catch (error: unknown) {
-      if (error instanceof HttpException) throw error;
+  ) {
+    const motor = await this.motorService.update(id, updateMotorDto);
+    return {
+      success: true,
+      data: motor,
+      message: 'Motor berhasil diperbarui',
+      timestamp: new Date(),
+    };
+  }
 
-      const prismaError = error as PrismaError;
-      this.logger.error(`Failed to update motor with id ${id}`, prismaError);
-
-      if (prismaError.code === 'P2002') {
-        throw new HttpException(
-          'Plat nomor already exists',
-          HttpStatus.CONFLICT,
-        );
-      }
-
-      const errorMessage = this.getErrorMessage(error);
-      throw new HttpException(errorMessage, HttpStatus.INTERNAL_SERVER_ERROR);
-    }
+  @Put(':id/cancel-service')
+  async cancelService(@Param('id', ParseIntPipe) id: number) {
+    const motor = await this.motorService.cancelService(id);
+    return {
+      success: true,
+      data: motor,
+      message: 'Service motor berhasil dibatalkan',
+      timestamp: new Date(),
+    };
   }
 
   @Delete(':id')
-  @UseGuards(JwtAuthGuard)
-  async remove(
-    @Param('id') id: string,
-  ): Promise<ApiResponse<{ message: string }>> {
+  @HttpCode(HttpStatus.OK)
+  async remove(@Param('id', ParseIntPipe) id: number) {
     try {
-      const result = await this.motorService.remove(+id);
+      const result = await this.motorService.remove(id);
+
+      // ✅ OPTIMASI: Minimal data untuk delete response
       return {
         success: true,
+        data: {
+          message: result.message,
+          motorId: id,
+          deletedAt: new Date(),
+        },
         message: result.message,
+        timestamp: new Date(),
       };
     } catch (error: unknown) {
-      if (error instanceof HttpException) throw error;
-      this.logger.error(`Failed to delete motor with id ${id}`, error);
+      const errorMessage =
+        error instanceof Error ? error.message : 'Gagal menghapus motor';
 
-      const errorMessage = this.getErrorMessage(error);
-      throw new HttpException(errorMessage, HttpStatus.INTERNAL_SERVER_ERROR);
+      return {
+        success: false,
+        error: errorMessage,
+        message: 'Gagal menghapus motor',
+        timestamp: new Date(),
+      };
     }
   }
 
-  // ✅ NEW: Endpoint untuk mendapatkan mileage
-  @Post('mileage')
-  @UseGuards(JwtAuthGuard)
-  async getMileage(
-    @Body() mileageDto: MileageDto,
-  ): Promise<MileageApiResponse> {
-    try {
-      const result = await this.motorService.getMileage(
-        mileageDto.imei,
-        mileageDto.startTime,
-        mileageDto.endTime,
-      );
-      return result;
-    } catch (error: unknown) {
-      this.logger.error('Failed to get mileage', error);
-
-      const errorMessage = this.getErrorMessage(error);
-      throw new HttpException(errorMessage, HttpStatus.BAD_REQUEST);
-    }
+  // ========== SERVICE ENDPOINTS ==========
+  @Put(':id/mark-for-service')
+  async markForService(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { service_notes?: string },
+  ) {
+    const motor = await this.motorService.markForService(
+      id,
+      body.service_notes,
+    );
+    return {
+      success: true,
+      data: motor,
+      message: 'Motor berhasil ditandai untuk service',
+      timestamp: new Date(),
+    };
   }
 
-  // ✅ NEW: Endpoint untuk sync lokasi manual
+  @Put(':id/complete-service')
+  async completeService(@Param('id', ParseIntPipe) id: number) {
+    const motor = await this.motorService.completeService(id);
+    return {
+      success: true,
+      data: motor,
+      message: 'Service motor berhasil diselesaikan',
+      timestamp: new Date(),
+    };
+  }
+
+  @Get('service/pending')
+  async getPendingServiceMotors() {
+    return {
+      success: true,
+      data: await this.motorService.findPendingService(),
+      timestamp: new Date(),
+    };
+  }
+
+  @Get('service/in-progress')
+  async getInServiceMotors() {
+    return {
+      success: true,
+      data: await this.motorService.findInService(),
+      timestamp: new Date(),
+    };
+  }
+
+  // ========== GPS ENDPOINTS ==========
+  @Get('gps/all')
+  async findWithGps() {
+    return {
+      success: true,
+      data: await this.motorGpsService.findWithGps(),
+      timestamp: new Date(),
+    };
+  }
+
   @Post(':id/sync-location')
-  @UseGuards(JwtAuthGuard)
-  async syncLocation(@Param('id') id: string): Promise<SyncLocationResponse> {
-    try {
-      const result = await this.motorService.syncMotorLocation(+id);
-      return result;
-    } catch (error: unknown) {
-      this.logger.error(`Failed to sync location for motor ${id}`, error);
+  async syncLocation(@Param('id', ParseIntPipe) id: number) {
+    return {
+      success: true,
+      data: await this.motorGpsService.syncMotorLocation(id),
+      timestamp: new Date(),
+    };
+  }
 
-      const errorMessage = this.getErrorMessage(error);
-      throw new HttpException(errorMessage, HttpStatus.BAD_REQUEST);
+  @Get(':id/vehicle-status')
+  async getVehicleStatus(@Param('id', ParseIntPipe) id: number) {
+    return {
+      success: true,
+      data: await this.motorGpsService.getVehicleStatus(id),
+      timestamp: new Date(),
+    };
+  }
+
+  @Get('dashboard/gps')
+  async getGpsDashboard() {
+    return {
+      success: true,
+      data: await this.motorGpsService.getGpsDashboard(),
+      timestamp: new Date(),
+    };
+  }
+
+  // ========== MILEAGE ENDPOINTS ==========
+  @Get(':id/mileage')
+  async getMileage(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('startTime', ParseIntPipe) startTime: number,
+    @Query('endTime', new ParseIntPipe({ optional: true })) endTime?: number,
+  ) {
+    return {
+      success: true,
+      data: await this.motorMileageService.getMileage(id, startTime, endTime),
+      timestamp: new Date(),
+    };
+  }
+
+  @Post(':id/sync-mileage')
+  @HttpCode(HttpStatus.OK)
+  async syncMileage(@Param('id', ParseIntPipe) id: number) {
+    try {
+      await this.motorMileageService.syncMileageData(id);
+
+      // ✅ OPTIMASI: Minimal data untuk sync response
+      return {
+        success: true,
+        data: {
+          success: true,
+          message: 'Data mileage berhasil disinkronisasi',
+          motorId: id,
+        },
+        message: 'Data mileage berhasil disinkronisasi',
+        timestamp: new Date(),
+      };
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error
+          ? error.message
+          : 'Gagal menyinkronisasi data mileage';
+
+      return {
+        success: false,
+        error: errorMessage,
+        message: 'Gagal menyinkronisasi data mileage',
+        timestamp: new Date(),
+      };
     }
   }
 
-  // ✅ NEW: Endpoint untuk mendapatkan riwayat perjalanan
-  @Get('track-history/:imei')
-  @UseGuards(JwtAuthGuard)
-  async getTrackHistory(
-    @Param('imei') imei: string,
-    @Query('startTime') startTime: string,
-    @Query('endTime') endTime?: string,
-  ): Promise<TrackHistoryResponse> {
-    try {
-      const start = parseInt(startTime);
-
-      if (isNaN(start)) {
-        throw new HttpException(
-          'startTime harus berupa timestamp yang valid',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-
-      const end =
-        endTime && !isNaN(parseInt(endTime)) ? parseInt(endTime) : undefined;
-
-      const result = await this.motorService.getTrackHistory(imei, start, end);
-      return result;
-    } catch (error: unknown) {
-      this.logger.error(`Failed to get track history for IMEI ${imei}`, error);
-
-      const errorMessage = this.getErrorMessage(error);
-      throw new HttpException(errorMessage, HttpStatus.BAD_REQUEST);
-    }
+  @Get(':id/mileage-history')
+  async getMileageHistory(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('days', new DefaultValuePipe(30), ParseIntPipe) days: number,
+  ) {
+    return {
+      success: true,
+      data: await this.motorMileageService.getMileageHistory(id, days),
+      timestamp: new Date(),
+    };
   }
 
+  // ========== HELPER METHOD ==========
   /**
-   * Extract error message safely tanpa unsafe member access
+   * Validasi IMEI menggunakan Luhn algorithm - OPTIMASI
    */
-  private getErrorMessage(error: unknown): string {
-    // Case 1: Error instance
-    if (error instanceof Error) {
-      return error.message;
-    }
+  private validateImeiLuhn(imei: string): boolean {
+    if (imei.length !== 15) return false;
 
-    // Case 2: String
-    if (typeof error === 'string') {
-      return error;
-    }
+    let sum = 0;
+    for (let i = 0; i < 15; i++) {
+      let digit = parseInt(imei[i]);
 
-    // Case 3: Object with message property (type-safe check)
-    if (error !== null && typeof error === 'object' && 'message' in error) {
-      const errorWithMessage = error as ErrorWithMessage;
-      return errorWithMessage.message;
-    }
-
-    // Case 4: Object dengan properti lain (safe conversion)
-    if (error !== null && typeof error === 'object') {
-      try {
-        return JSON.stringify(error);
-      } catch {
-        return 'Unknown error object';
+      // Double every second digit dari kanan
+      if ((14 - i) % 2 === 1) {
+        digit = digit * 2;
+        if (digit > 9) digit -= 9;
       }
+
+      sum += digit;
     }
 
-    // Case 5: Fallback
-    return 'Unknown error occurred';
+    return sum % 10 === 0;
   }
 }
