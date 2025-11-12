@@ -14,7 +14,7 @@ import {
 
 @Injectable()
 export class WhatsAppService {
-  private readonly logger = new Logger(WhatsAppService.name);
+  private readonly notificationsEnabled = false; // ✅ NONAKTIFKAN NOTIFIKASI
 
   constructor(
     private prisma: PrismaService,

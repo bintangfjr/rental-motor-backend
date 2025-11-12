@@ -105,7 +105,7 @@ export class IopgpsApiService {
             headers: {
               accessToken,
             },
-            timeout: 8000,
+            timeout: 20000, // dari 8000 → 20000
           }),
         );
 

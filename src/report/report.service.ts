@@ -31,13 +31,6 @@ export interface MotorUsage {
   total_sewa: number;
   total_durasi: number;
   total_pendapatan: number;
-  sewas: Array<{
-    id: number;
-    durasi_sewa: number;
-    total_harga: number;
-    status: string;
-    created_at: Date;
-  }>;
 }
 
 export interface FinancialReport {
@@ -49,15 +42,10 @@ export interface FinancialReport {
   totalDenda: number;
   pendapatanPerBulan: PendapatanPerBulan[];
   pendapatanPerMotor: Array<{
-    motor_id: number;
-    _sum: {
-      total_harga: number | null;
-    };
-    motor?: {
-      plat_nomor: string;
-      merk: string;
-      model: string;
-    };
+    motor_plat: string;
+    motor_merk: string;
+    motor_model: string;
+    total_pendapatan: number;
   }>;
 }
 
@@ -76,26 +64,27 @@ export interface MonthlyReport {
   totalPendapatan: number;
   sewaPerHari: SewaPerHari[];
   motorTerpopuler: Array<{
-    motor_id: number;
-    _count: {
-      id: number;
-    };
-    motor?: {
-      plat_nomor: string;
-      merk: string;
-      model: string;
-    };
+    motor_plat: string;
+    motor_merk: string;
+    motor_model: string;
+    total_sewa: number;
   }>;
   penyewaTeraktif: Array<{
-    penyewa_id: number;
-    _count: {
-      id: number;
-    };
-    penyewa?: {
-      nama: string;
-      no_whatsapp: string;
-    };
+    penyewa_nama: string;
+    penyewa_whatsapp: string;
+    total_sewa: number;
   }>;
+}
+
+export interface BackupReport {
+  periode: {
+    start: string;
+    end: string;
+  };
+  totalRecords: number;
+  totalPendapatan: number;
+  totalDenda: number;
+  data: any[];
 }
 
 @Injectable()
@@ -119,7 +108,7 @@ export class ReportService {
       motorPerStatus,
       sewaPerBulan,
     ] = await Promise.all([
-      // Jumlah sewa aktif
+      // Jumlah sewa aktif (masih dari sewa aktif)
       this.prisma.sewa.count({
         where: { status: this.STATUS.AKTIF },
       }),
@@ -129,10 +118,9 @@ export class ReportService {
         where: { status: this.STATUS.TERSEDIA },
       }),
 
-      // Total pendapatan dari sewa yang selesai
-      this.prisma.sewa.aggregate({
-        where: { status: this.STATUS.SELESAI },
-        _sum: { total_harga: true },
+      // Total pendapatan dari HISTORY (backup data)
+      this.prisma.history.aggregate({
+        _sum: { harga: true },
       }),
 
       // Total penyewa aktif (punya sewa aktif)
@@ -154,8 +142,8 @@ export class ReportService {
         },
       }),
 
-      // Sewa per bulan (6 bulan terakhir)
-      this.getSewaLast6Months(),
+      // Sewa per bulan dari HISTORY (6 bulan terakhir)
+      this.getSewaLast6MonthsFromHistory(),
     ]);
 
     const motorStatusCount: MotorStatusCount = motorPerStatus.reduce(
@@ -169,7 +157,7 @@ export class ReportService {
     return {
       jumlahSewaAktif,
       jumlahMotorTersedia,
-      totalPendapatan: totalPendapatan._sum.total_harga || 0,
+      totalPendapatan: totalPendapatan._sum.harga || 0,
       totalPenyewaAktif,
       motorPerStatus: motorStatusCount,
       sewaPerBulan,
@@ -193,36 +181,35 @@ export class ReportService {
       motorTerpopuler,
       penyewaTeraktif,
     ] = await Promise.all([
-      // Total sewa bulan ini
-      this.prisma.sewa.count({
+      // Total sewa bulan ini dari HISTORY
+      this.prisma.history.count({
         where: {
-          created_at: {
+          tgl_selesai: {
             gte: startDate,
             lte: endDate,
           },
         },
       }),
 
-      // Total pendapatan bulan ini
-      this.prisma.sewa.aggregate({
+      // Total pendapatan bulan ini dari HISTORY
+      this.prisma.history.aggregate({
         where: {
-          status: this.STATUS.SELESAI,
-          created_at: {
+          tgl_selesai: {
             gte: startDate,
             lte: endDate,
           },
         },
-        _sum: { total_harga: true },
+        _sum: { harga: true },
       }),
 
-      // Sewa per hari dalam bulan
-      this.getSewaPerHari(targetYear, targetMonth),
+      // Sewa per hari dalam bulan dari HISTORY
+      this.getSewaPerHariFromHistory(targetYear, targetMonth),
 
-      // Motor terpopuler bulan ini
-      this.prisma.sewa.groupBy({
-        by: ['motor_id'],
+      // Motor terpopuler bulan ini dari HISTORY
+      this.prisma.history.groupBy({
+        by: ['motor_plat', 'motor_merk', 'motor_model'],
         where: {
-          created_at: {
+          tgl_selesai: {
             gte: startDate,
             lte: endDate,
           },
@@ -238,11 +225,11 @@ export class ReportService {
         take: 5,
       }),
 
-      // Penyewa teraktif bulan ini
-      this.prisma.sewa.groupBy({
-        by: ['penyewa_id'],
+      // Penyewa teraktif bulan ini dari HISTORY
+      this.prisma.history.groupBy({
+        by: ['penyewa_nama', 'penyewa_whatsapp'],
         where: {
-          created_at: {
+          tgl_selesai: {
             gte: startDate,
             lte: endDate,
           },
@@ -259,41 +246,22 @@ export class ReportService {
       }),
     ]);
 
-    // Get motor details for popular motors
-    const motorDetails = await Promise.all(
-      motorTerpopuler.map(async (item) => {
-        const motor = await this.prisma.motor.findUnique({
-          where: { id: item.motor_id },
-          select: { plat_nomor: true, merk: true, model: true },
-        });
-        return {
-          ...item,
-          motor,
-        };
-      }),
-    );
-
-    // Get penyewa details for active penyewa
-    const penyewaDetails = await Promise.all(
-      penyewaTeraktif.map(async (item) => {
-        const penyewa = await this.prisma.penyewa.findUnique({
-          where: { id: item.penyewa_id },
-          select: { nama: true, no_whatsapp: true },
-        });
-        return {
-          ...item,
-          penyewa,
-        };
-      }),
-    );
-
     return {
       periode: `${targetMonth}/${targetYear}`,
       totalSewa,
-      totalPendapatan: totalPendapatan._sum.total_harga || 0,
+      totalPendapatan: totalPendapatan._sum.harga || 0,
       sewaPerHari,
-      motorTerpopuler: motorDetails,
-      penyewaTeraktif: penyewaDetails,
+      motorTerpopuler: motorTerpopuler.map((item) => ({
+        motor_plat: item.motor_plat,
+        motor_merk: item.motor_merk,
+        motor_model: item.motor_model,
+        total_sewa: item._count.id,
+      })),
+      penyewaTeraktif: penyewaTeraktif.map((item) => ({
+        penyewa_nama: item.penyewa_nama,
+        penyewa_whatsapp: item.penyewa_whatsapp,
+        total_sewa: item._count.id,
+      })),
     };
   }
 
@@ -303,63 +271,50 @@ export class ReportService {
   ): Promise<MotorUsage[]> {
     const start = startDate
       ? new Date(startDate)
-      : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // Default: 30 days ago
+      : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
 
-    const motorUsage = await this.prisma.motor.findMany({
-      include: {
-        sewas: {
-          where: {
-            created_at: {
-              gte: start,
-              lte: end,
-            },
-          },
-          select: {
-            id: true,
-            durasi_sewa: true,
-            total_harga: true,
-            status: true,
-            created_at: true,
-          },
-        },
-        _count: {
-          select: {
-            sewas: {
-              where: {
-                created_at: {
-                  gte: start,
-                  lte: end,
-                },
-              },
-            },
-          },
+    // Get motor usage from HISTORY table
+    const historyUsage = await this.prisma.history.groupBy({
+      by: ['motor_plat', 'motor_merk', 'motor_model'],
+      where: {
+        tgl_selesai: {
+          gte: start,
+          lte: end,
         },
       },
-      orderBy: {
-        sewas: {
-          _count: 'desc',
-        },
+      _count: {
+        id: true,
+      },
+      _sum: {
+        harga: true,
       },
     });
 
-    return motorUsage.map((motor) => ({
-      id: motor.id,
-      plat_nomor: motor.plat_nomor,
-      merk: motor.merk,
-      model: motor.model,
-      status: motor.status,
-      total_sewa: motor._count.sewas,
-      total_durasi: motor.sewas.reduce(
-        (sum, sewa) => sum + sewa.durasi_sewa,
-        0,
-      ),
-      total_pendapatan: motor.sewas.reduce(
-        (sum, sewa) => sum + sewa.total_harga,
-        0,
-      ),
-      sewas: motor.sewas,
-    }));
+    // Get current motor status
+    const motors = await this.prisma.motor.findMany({
+      select: {
+        id: true,
+        plat_nomor: true,
+        merk: true,
+        model: true,
+        status: true,
+      },
+    });
+
+    return historyUsage.map((item) => {
+      const motor = motors.find((m) => m.plat_nomor === item.motor_plat);
+      return {
+        id: motor?.id || 0,
+        plat_nomor: item.motor_plat,
+        merk: item.motor_merk,
+        model: item.motor_model,
+        status: motor?.status || 'unknown',
+        total_sewa: item._count.id,
+        total_durasi: item._count.id, // Approximate since durasi is not stored in history
+        total_pendapatan: item._sum.harga || 0,
+      };
+    });
   }
 
   async getFinancialReports(
@@ -368,7 +323,7 @@ export class ReportService {
   ): Promise<FinancialReport> {
     const start = startDate
       ? new Date(startDate)
-      : new Date(Date.now() - 365 * 24 * 60 * 60 * 1000); // Default: 1 year ago
+      : new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
 
     const [
@@ -377,43 +332,41 @@ export class ReportService {
       pendapatanPerMotor,
       dendaTotal,
     ] = await Promise.all([
-      // Total pendapatan
-      this.prisma.sewa.aggregate({
-        where: {
-          status: this.STATUS.SELESAI,
-          created_at: {
-            gte: start,
-            lte: end,
-          },
-        },
-        _sum: { total_harga: true },
-      }),
-
-      // Pendapatan per bulan
-      this.getPendapatanPerBulan(start, end),
-
-      // Pendapatan per motor
-      this.prisma.sewa.groupBy({
-        by: ['motor_id'],
-        where: {
-          status: this.STATUS.SELESAI,
-          created_at: {
-            gte: start,
-            lte: end,
-          },
-        },
-        _sum: { total_harga: true },
-        orderBy: {
-          _sum: {
-            total_harga: 'desc',
-          },
-        },
-      }),
-
-      // Total denda
+      // Total pendapatan dari HISTORY
       this.prisma.history.aggregate({
         where: {
-          created_at: {
+          tgl_selesai: {
+            gte: start,
+            lte: end,
+          },
+        },
+        _sum: { harga: true },
+      }),
+
+      // Pendapatan per bulan dari HISTORY
+      this.getPendapatanPerBulanFromHistory(start, end),
+
+      // Pendapatan per motor dari HISTORY
+      this.prisma.history.groupBy({
+        by: ['motor_plat', 'motor_merk', 'motor_model'],
+        where: {
+          tgl_selesai: {
+            gte: start,
+            lte: end,
+          },
+        },
+        _sum: { harga: true },
+        orderBy: {
+          _sum: {
+            harga: 'desc',
+          },
+        },
+      }),
+
+      // Total denda dari HISTORY
+      this.prisma.history.aggregate({
+        where: {
+          tgl_selesai: {
             gte: start,
             lte: end,
           },
@@ -422,33 +375,145 @@ export class ReportService {
       }),
     ]);
 
-    // Get motor details for pendapatan per motor
-    const motorDetails = await Promise.all(
-      pendapatanPerMotor.map(async (item) => {
-        const motor = await this.prisma.motor.findUnique({
-          where: { id: item.motor_id },
-          select: { plat_nomor: true, merk: true, model: true },
-        });
-        return {
-          ...item,
-          motor,
-        };
+    return {
+      periode: {
+        start: start.toISOString().split('T')[0],
+        end: end.toISOString().split('T')[0],
+      },
+      totalPendapatan: totalPendapatan._sum.harga || 0,
+      totalDenda: dendaTotal._sum.denda || 0,
+      pendapatanPerBulan,
+      pendapatanPerMotor: pendapatanPerMotor.map((item) => ({
+        motor_plat: item.motor_plat,
+        motor_merk: item.motor_merk,
+        motor_model: item.motor_model,
+        total_pendapatan: item._sum.harga || 0,
+      })),
+    };
+  }
+
+  // ✅ NEW METHOD: Backup data report from histories
+  async getBackupReport(
+    startDate?: string,
+    endDate?: string,
+    page: number = 1,
+    limit: number = 50,
+  ): Promise<BackupReport> {
+    const start = startDate ? new Date(startDate) : new Date(0); // Beginning of time
+    const end = endDate ? new Date(endDate) : new Date();
+
+    const skip = (page - 1) * limit;
+
+    const [data, totalRecords, financialSummary] = await Promise.all([
+      // Get paginated history data
+      this.prisma.history.findMany({
+        where: {
+          tgl_selesai: {
+            gte: start,
+            lte: end,
+          },
+        },
+        orderBy: { tgl_selesai: 'desc' },
+        skip,
+        take: limit,
       }),
-    );
+
+      // Total records count
+      this.prisma.history.count({
+        where: {
+          tgl_selesai: {
+            gte: start,
+            lte: end,
+          },
+        },
+      }),
+
+      // Financial summary
+      this.prisma.history.aggregate({
+        where: {
+          tgl_selesai: {
+            gte: start,
+            lte: end,
+          },
+        },
+        _sum: {
+          harga: true,
+          denda: true,
+        },
+      }),
+    ]);
 
     return {
       periode: {
         start: start.toISOString().split('T')[0],
         end: end.toISOString().split('T')[0],
       },
-      totalPendapatan: totalPendapatan._sum.total_harga || 0,
-      totalDenda: dendaTotal._sum.denda || 0,
-      pendapatanPerBulan,
-      pendapatanPerMotor: motorDetails,
+      totalRecords,
+      totalPendapatan: financialSummary._sum.harga || 0,
+      totalDenda: financialSummary._sum.denda || 0,
+      data,
     };
   }
 
-  private async getSewaLast6Months(): Promise<SewaPerBulan[]> {
+  // ✅ NEW METHOD: Export backup data to CSV/Excel format
+  async exportBackupData(startDate?: string, endDate?: string) {
+    const start = startDate ? new Date(startDate) : new Date(0);
+    const end = endDate ? new Date(endDate) : new Date();
+
+    const histories = await this.prisma.history.findMany({
+      where: {
+        tgl_selesai: {
+          gte: start,
+          lte: end,
+        },
+      },
+      orderBy: { tgl_selesai: 'desc' },
+    });
+
+    // Transform data for export
+    const exportData = histories.map((history) => ({
+      'ID Sewa': history.sewa_id,
+      'Tanggal Selesai': moment(history.tgl_selesai).format(
+        'YYYY-MM-DD HH:mm:ss',
+      ),
+      'Status Selesai': history.status_selesai,
+      Harga: history.harga,
+      Denda: history.denda,
+      'Keterlambatan (menit)': history.keterlambatan_menit,
+      Catatan: history.catatan,
+      'Plat Motor': history.motor_plat,
+      'Merk Motor': history.motor_merk,
+      'Model Motor': history.motor_model,
+      'Tahun Motor': history.tahun_motor,
+      'Nama Penyewa': history.penyewa_nama,
+      'WhatsApp Penyewa': history.penyewa_whatsapp,
+      'Nama Admin': history.admin_nama,
+      'Tanggal Sewa': moment(history.tgl_sewa).format('YYYY-MM-DD HH:mm:ss'),
+      'Tanggal Kembali': moment(history.tgl_kembali).format(
+        'YYYY-MM-DD HH:mm:ss',
+      ),
+      'Durasi Sewa': history.durasi_sewa,
+      'Satuan Durasi': history.satuan_durasi,
+      Jaminan: history.jaminan,
+      Pembayaran: history.pembayaran,
+      'Biaya Tambahan': history.additional_costs,
+      'Catatan Tambahan': history.catatan_tambahan,
+      'Created At': moment(history.created_at).format('YYYY-MM-DD HH:mm:ss'),
+      'Updated At': moment(history.updated_at).format('YYYY-MM-DD HH:mm:ss'),
+    }));
+
+    return {
+      periode: {
+        start: start.toISOString().split('T')[0],
+        end: end.toISOString().split('T')[0],
+      },
+      totalRecords: histories.length,
+      data: exportData,
+    };
+  }
+
+  // Private methods using HISTORY table
+  private async getSewaLast6MonthsFromHistory(): Promise<SewaPerBulan[]> {
     const months: SewaPerBulan[] = [];
     const now = new Date();
 
@@ -466,9 +531,9 @@ export class ReportService {
         59,
       );
 
-      const count = await this.prisma.sewa.count({
+      const count = await this.prisma.history.count({
         where: {
-          created_at: {
+          tgl_selesai: {
             gte: startDate,
             lte: endDate,
           },
@@ -484,7 +549,7 @@ export class ReportService {
     return months;
   }
 
-  private async getSewaPerHari(
+  private async getSewaPerHariFromHistory(
     year: number,
     month: number,
   ): Promise<SewaPerHari[]> {
@@ -495,9 +560,9 @@ export class ReportService {
       const startDate = new Date(year, month - 1, day, 0, 0, 0);
       const endDate = new Date(year, month - 1, day, 23, 59, 59);
 
-      const count = await this.prisma.sewa.count({
+      const count = await this.prisma.history.count({
         where: {
-          created_at: {
+          tgl_selesai: {
             gte: startDate,
             lte: endDate,
           },
@@ -513,7 +578,7 @@ export class ReportService {
     return sewaPerHari;
   }
 
-  private async getPendapatanPerBulan(
+  private async getPendapatanPerBulanFromHistory(
     start: Date,
     end: Date,
   ): Promise<PendapatanPerBulan[]> {
@@ -533,20 +598,19 @@ export class ReportService {
 
       const monthName = moment(monthStart).format('MMM YYYY');
 
-      const pendapatan = await this.prisma.sewa.aggregate({
+      const pendapatan = await this.prisma.history.aggregate({
         where: {
-          status: this.STATUS.SELESAI,
-          created_at: {
+          tgl_selesai: {
             gte: monthStart,
             lte: monthEnd,
           },
         },
-        _sum: { total_harga: true },
+        _sum: { harga: true },
       });
 
       result.push({
         bulan: monthName,
-        pendapatan: pendapatan._sum.total_harga || 0,
+        pendapatan: pendapatan._sum.harga || 0,
       });
 
       // Move to next month

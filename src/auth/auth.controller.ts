@@ -32,6 +32,52 @@ interface AuthenticatedRequest extends Request {
   };
 }
 
+// Interface untuk error response
+interface ErrorResponse {
+  success: false;
+  message: string;
+  statusCode: number;
+}
+
+// Interface untuk login response
+interface LoginResponse {
+  success: boolean;
+  access_token: string;
+  admin: {
+    id: number;
+    nama_lengkap: string;
+    username: string;
+    email: string;
+    is_super_admin: boolean;
+  };
+}
+
+// Interface untuk logout response
+interface LogoutResponse {
+  success: boolean;
+  message: string;
+}
+
+// Interface untuk change password response
+interface ChangePasswordResponse {
+  success: boolean;
+  message: string;
+}
+
+// Interface untuk admin profile response
+interface AdminProfileResponse {
+  success: boolean;
+  data: {
+    id: number;
+    nama_lengkap: string;
+    username: string;
+    email: string;
+    is_super_admin: boolean;
+    created_at?: Date;
+    updated_at?: Date;
+  };
+}
+
 @ApiTags('Authentication')
 @Controller('auth')
 export class AuthController {
@@ -70,7 +116,9 @@ export class AuthController {
       },
     },
   })
-  async adminLogin(@Body() loginAdminDto: LoginAdminDto) {
+  async adminLogin(
+    @Body() loginAdminDto: LoginAdminDto,
+  ): Promise<LoginResponse> {
     // Debug payload
     this.logger.debug(`Login payload: ${JSON.stringify(loginAdminDto)}`);
 
@@ -81,14 +129,17 @@ export class AuthController {
         access_token: result.access_token,
         admin: result.admin,
       };
-    } catch (error: any) {
-      this.logger.error(`Login error: ${error.message}`);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Login failed';
+      this.logger.error(`Login error: ${errorMessage}`);
+
       throw new HttpException(
         {
           success: false,
-          message: error.message || 'Login failed',
+          message: errorMessage,
           statusCode: HttpStatus.UNAUTHORIZED,
-        },
+        } as ErrorResponse,
         HttpStatus.UNAUTHORIZED,
       );
     }
@@ -110,7 +161,7 @@ export class AuthController {
       },
     },
   })
-  adminLogout(@Request() req: AuthenticatedRequest) {
+  adminLogout(@Request() req: AuthenticatedRequest): LogoutResponse {
     this.logger.log(`Admin ${req.user.id} logged out`);
     return {
       success: true,
@@ -148,7 +199,7 @@ export class AuthController {
   async changePassword(
     @Request() req: AuthenticatedRequest,
     @Body() changePasswordDto: ChangePasswordDto,
-  ) {
+  ): Promise<ChangePasswordResponse> {
     this.logger.debug(`Change password request by adminId=${req.user.id}`);
 
     // Validasi manual: pastikan password dan konfirmasi password sama
@@ -160,7 +211,7 @@ export class AuthController {
           success: false,
           message: 'Password confirmation does not match',
           statusCode: HttpStatus.BAD_REQUEST,
-        },
+        } as ErrorResponse,
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -171,14 +222,17 @@ export class AuthController {
         success: true,
         message: 'Password updated successfully!',
       };
-    } catch (error: any) {
-      this.logger.error(`Change password error: ${error.message}`);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Failed to change password';
+      this.logger.error(`Change password error: ${errorMessage}`);
+
       throw new HttpException(
         {
           success: false,
-          message: error.message || 'Failed to change password',
+          message: errorMessage,
           statusCode: HttpStatus.BAD_REQUEST,
-        },
+        } as ErrorResponse,
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -229,7 +283,9 @@ export class AuthController {
       },
     },
   })
-  async getCurrentAdmin(@Request() req: AuthenticatedRequest): Promise<any> {
+  async getCurrentAdmin(
+    @Request() req: AuthenticatedRequest,
+  ): Promise<AdminProfileResponse> {
     this.logger.debug(`Get profile request for adminId=${req.user.id}`);
 
     try {
@@ -241,7 +297,7 @@ export class AuthController {
             success: false,
             message: 'Admin not found',
             statusCode: HttpStatus.NOT_FOUND,
-          },
+          } as ErrorResponse,
           HttpStatus.NOT_FOUND,
         );
       }
@@ -250,8 +306,10 @@ export class AuthController {
         success: true,
         data: admin,
       };
-    } catch (error: any) {
-      this.logger.error(`Get profile error: ${error.message}`);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Failed to get admin profile';
+      this.logger.error(`Get profile error: ${errorMessage}`);
 
       // Jika error sudah berupa HttpException, lempar kembali
       if (error instanceof HttpException) {
@@ -263,7 +321,7 @@ export class AuthController {
           success: false,
           message: 'Failed to get admin profile',
           statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
-        },
+        } as ErrorResponse,
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }

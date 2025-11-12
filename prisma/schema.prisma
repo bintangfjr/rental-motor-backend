@@ -88,6 +88,11 @@ model Sewa {
   admin                  Admin                  @relation(fields: [admin_id], references: [id], onDelete: Cascade)
   motor                  Motor                  @relation(fields: [motor_id], references: [id], onDelete: Cascade)
   penyewa                Penyewa                @relation(fields: [penyewa_id], references: [id], onDelete: Cascade)
+  tgl_actual_kembali    DateTime?  // Tanggal sebenarnya motor dikembalikan
+  is_overdue           Boolean    @default(false)
+  overdue_hours        Int        @default(0) // Total jam keterlambatan
+  extended_hours       Int        @default(0) // Jam perpanjangan
+  last_overdue_calc    DateTime?  // Terakhir kali hitung overdue
   whatsapp_notifications WhatsAppNotification[]
 
   @@index([admin_id], map: "sewas_admin_id_fkey")
@@ -141,11 +146,14 @@ model WhatsAppNotification {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
   sewa_id    Int?
-  sewas      Sewa?    @relation(fields: [sewa_id], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_whatsapp_notifications_sewa")
+  
+  // ✅ PERBAIKAN: Ubah dari Restrict menjadi Cascade
+  sewa       Sewa?    @relation(fields: [sewa_id], references: [id], onDelete: Cascade)
 
-  @@index([sewa_id], map: "fk_whatsapp_notifications_sewa")
+  @@index([sewa_id])
   @@map("whatsapp_notifications")
 }
+
 
 model Settings {
   id           Int      @id @default(autoincrement())

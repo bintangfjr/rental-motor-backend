@@ -9,6 +9,27 @@ import { LoginAdminDto } from './dto/login-admin.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import * as bcrypt from 'bcrypt';
 
+// Interface untuk payload JWT
+export interface JwtPayload {
+  sub: number;
+  username: string;
+  is_super_admin: boolean;
+  iat?: number;
+  exp?: number;
+}
+
+// Interface untuk response admin
+export interface AdminResponse {
+  id: number;
+  nama_lengkap: string;
+  username: string;
+  email: string;
+  is_super_admin: boolean;
+  created_at?: Date;
+  updated_at?: Date;
+}
+
+// Interface untuk admin payload (digunakan dalam context)
 export interface AdminPayload {
   id: number;
   username: string;
@@ -23,7 +44,10 @@ export class AuthService {
   ) {}
 
   // Login Admin
-  async adminLogin(loginAdminDto: LoginAdminDto) {
+  async adminLogin(loginAdminDto: LoginAdminDto): Promise<{
+    access_token: string;
+    admin: AdminResponse;
+  }> {
     const admin = await this.prisma.admin.findUnique({
       where: { username: loginAdminDto.username },
     });
@@ -41,14 +65,16 @@ export class AuthService {
       throw new UnauthorizedException('Username atau password salah.');
     }
 
-    const payload = {
+    const payload: JwtPayload = {
       sub: admin.id,
       username: admin.username,
       is_super_admin: admin.is_super_admin,
     };
 
+    const access_token = this.jwtService.sign(payload);
+
     return {
-      access_token: this.jwtService.sign(payload),
+      access_token,
       admin: {
         id: admin.id,
         nama_lengkap: admin.nama_lengkap,
@@ -60,7 +86,10 @@ export class AuthService {
   }
 
   // Ganti Password Admin
-  async changePassword(adminId: number, dto: ChangePasswordDto) {
+  async changePassword(
+    adminId: number,
+    dto: ChangePasswordDto,
+  ): Promise<{ message: string }> {
     const admin = await this.prisma.admin.findUnique({
       where: { id: adminId },
     });
@@ -95,7 +124,7 @@ export class AuthService {
   }
 
   // Ambil profil admin
-  async getAdminProfile(adminId: number) {
+  async getAdminProfile(adminId: number): Promise<AdminResponse> {
     const admin = await this.prisma.admin.findUnique({
       where: { id: adminId },
       select: {
@@ -117,17 +146,39 @@ export class AuthService {
   }
 
   // Validasi admin dari JWT
-  async validateAdmin(payload: any): Promise<AdminPayload | null> {
+  async validateAdmin(payload: JwtPayload): Promise<AdminPayload | null> {
     const admin = await this.prisma.admin.findUnique({
       where: { id: payload.sub },
     });
 
-    if (!admin) return null;
+    if (!admin) {
+      return null;
+    }
 
     return {
       id: admin.id,
       username: admin.username,
       is_super_admin: admin.is_super_admin,
+    };
+  }
+
+  // Logout Admin (Optional - untuk future implementation)
+  async adminLogout(adminId: number): Promise<{ message: string }> {
+    const admin = await this.prisma.admin.findUnique({
+      where: { id: adminId },
+    });
+
+    if (!admin) {
+      throw new UnauthorizedException('Admin tidak ditemukan.');
+    }
+
+    // Di sini Anda bisa menambahkan logika untuk:
+    // 1. Menambahkan token ke blacklist (jika menggunakan JWT blacklist)
+    // 2. Update last_logout_at field (jika ada di model Admin)
+    // 3. Membersihkan session data
+
+    return {
+      message: 'Logout berhasil.',
     };
   }
 }

@@ -98,4 +98,58 @@ export class ReportController {
       );
     }
   }
+
+  // ✅ NEW ENDPOINT: Backup data report
+  @Get('backup')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Get backup data from histories' })
+  @ApiQuery({ name: 'startDate', required: false, type: String })
+  @ApiQuery({ name: 'endDate', required: false, type: String })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  async getBackupReport(
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    try {
+      const backup = await this.reportService.getBackupReport(
+        startDate,
+        endDate,
+        page,
+        limit,
+      );
+      return { success: true, data: backup };
+    } catch {
+      throw new HttpException(
+        'Failed to fetch backup data',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  // ✅ NEW ENDPOINT: Export backup data
+  @Get('backup/export')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Export backup data to CSV format' })
+  @ApiQuery({ name: 'startDate', required: false, type: String })
+  @ApiQuery({ name: 'endDate', required: false, type: String })
+  async exportBackupData(
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    try {
+      const exportData = await this.reportService.exportBackupData(
+        startDate,
+        endDate,
+      );
+      return { success: true, data: exportData };
+    } catch {
+      throw new HttpException(
+        'Failed to export backup data',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
 }

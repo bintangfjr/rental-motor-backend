@@ -3,9 +3,28 @@ import { PassportStrategy } from '@nestjs/passport';
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 
+// Interface untuk payload JWT
+interface JwtPayload {
+  sub: number;
+  username: string;
+  is_super_admin: boolean;
+  iat?: number;
+  exp?: number;
+}
+
+// Interface untuk user yang divalidasi
+interface ValidatedUser {
+  id: number;
+  sub: number;
+  username: string;
+  email?: string;
+  nama_lengkap?: string;
+  is_super_admin: boolean;
+  isAdmin: boolean;
+}
+
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
-  // Diubah dari 'jwt-admin' menjadi 'jwt'
   constructor(private prisma: PrismaService) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -15,8 +34,8 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     });
   }
 
-  async validate(payload: any) {
-    // Check if token has required properties
+  async validate(payload: JwtPayload): Promise<ValidatedUser> {
+    // Validasi payload
     if (!payload.sub || !payload.username) {
       throw new UnauthorizedException('Token tidak valid');
     }

@@ -5,6 +5,7 @@ import {
   InternalServerErrorException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
+import { OverdueService } from './overdue.service'; // Import OverdueService
 import { CreateSewaDto } from './dto/create-sewa.dto';
 import { UpdateSewaDto } from './dto/update-sewa.dto';
 import { SelesaiSewaDto } from './dto/selesai-sewa.dto';
@@ -18,11 +19,21 @@ interface UpdateSewaData {
   jaminan?: string;
   pembayaran?: string;
   catatan_tambahan?: string | null;
+  is_overdue?: boolean;
+  overdue_hours?: number;
+  extended_hours?: number;
+}
+
+interface PerpanjangSewaDto {
+  tgl_kembali_baru: string;
 }
 
 @Injectable()
 export class SewaService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private overdueService: OverdueService, // Inject OverdueService
+  ) {}
 
   // ✅ FIXED: Parse date sebagai LOCAL TIME WIB
   private parseDateInput(dateString: string, fieldName: string): Date {
@@ -66,12 +77,6 @@ export class SewaService {
       throw new BadRequestException(
         'Tanggal kembali harus setelah tanggal sewa',
       );
-    }
-
-    const diffHours =
-      (tglKembali.getTime() - tglSewa.getTime()) / (1000 * 60 * 60);
-    if (diffHours < 1) {
-      throw new BadRequestException('Durasi sewa minimal 1 jam');
     }
   }
 
@@ -221,6 +226,9 @@ export class SewaService {
             additional_costs:
               this.convertAdditionalCostsForPrisma(additionalCosts),
             catatan_tambahan: createSewaDto.catatan_tambahan || null,
+            is_overdue: false,
+            overdue_hours: 0,
+            extended_hours: 0,
           },
           include: {
             motor: true,
@@ -255,17 +263,32 @@ export class SewaService {
     try {
       const where = status ? { status } : {};
 
-      return await this.prisma.sewa.findMany({
+      const sewas = await this.prisma.sewa.findMany({
         where,
         include: {
           motor: {
-            select: { id: true, plat_nomor: true, merk: true, model: true },
+            select: {
+              id: true,
+              plat_nomor: true,
+              merk: true,
+              model: true,
+              harga: true,
+            },
           },
           penyewa: { select: { id: true, nama: true, no_whatsapp: true } },
           admin: { select: { id: true, nama_lengkap: true } },
         },
         orderBy: { created_at: 'desc' },
       });
+
+      // ✅ Update overdue status untuk semua sewa aktif menggunakan OverdueService
+      if (!status || status === 'aktif') {
+        for (const sewa of sewas.filter((s) => s.status === 'aktif')) {
+          await this.overdueService.updateOverdueStatus(sewa.id);
+        }
+      }
+
+      return sewas;
     } catch (error) {
       console.error('Error in findAll:', error);
       throw new InternalServerErrorException('Gagal mengambil data sewa');
@@ -297,6 +320,12 @@ export class SewaService {
       if (!sewa) {
         throw new NotFoundException(`Sewa dengan ID ${id} tidak ditemukan`);
       }
+
+      // ✅ Update overdue status real-time menggunakan OverdueService
+      if (sewa.status === 'aktif') {
+        await this.overdueService.updateOverdueStatus(id);
+      }
+
       return sewa;
     } catch (error) {
       console.error(`Error in findOne sewa ID ${id}:`, error);
@@ -350,6 +379,10 @@ export class SewaService {
 
           updateData.durasi_sewa = durasi;
           updateData.total_harga = baseHarga;
+
+          // Reset overdue status jika diperpanjang
+          updateData.is_overdue = false;
+          updateData.overdue_hours = 0;
         }
 
         // Handle additional_costs update - FIXED: Convert to JSON string
@@ -414,7 +447,89 @@ export class SewaService {
     });
   }
 
-  // ✅✅✅ FIXED: SELESAI - Data pindah ke histories dan dihapus dari sewas
+  // ✅ METHOD: Perpanjang sewa (termasuk yang overdue)
+  async perpanjang(id: number, perpanjangSewaDto: PerpanjangSewaDto) {
+    return this.prisma.$transaction(async (prisma) => {
+      try {
+        console.log(`=== 🔄 PERPANJANG SEWA ID ${id} ===`);
+
+        const sewa = await prisma.sewa.findUnique({
+          where: { id },
+          include: { motor: true },
+        });
+
+        if (!sewa) throw new NotFoundException('Sewa tidak ditemukan');
+        if (sewa.status === 'selesai') {
+          throw new BadRequestException(
+            'Tidak dapat memperpanjang sewa yang sudah selesai',
+          );
+        }
+
+        // Parse tanggal kembali baru
+        const tglKembaliBaru = this.parseDateInput(
+          perpanjangSewaDto.tgl_kembali_baru,
+          'Tanggal kembali baru',
+        );
+
+        // Validasi: tanggal baru harus setelah tanggal kembali lama
+        if (tglKembaliBaru <= sewa.tgl_kembali) {
+          throw new BadRequestException(
+            'Tanggal kembali baru harus setelah tanggal kembali sebelumnya',
+          );
+        }
+
+        // Hitung durasi perpanjangan
+        const diffMs = tglKembaliBaru.getTime() - sewa.tgl_kembali.getTime();
+        const extendedHours = Math.ceil(diffMs / (1000 * 60 * 60));
+
+        // Hitung biaya perpanjangan berdasarkan satuan durasi
+        let biayaPerpanjangan = 0;
+        if (sewa.satuan_durasi === 'jam') {
+          const hargaPerJam = Math.ceil(sewa.motor.harga / 24);
+          biayaPerpanjangan = hargaPerJam * extendedHours;
+        } else {
+          const extendedDays = Math.ceil(extendedHours / 24);
+          biayaPerpanjangan = sewa.motor.harga * extendedDays;
+        }
+
+        // Update sewa
+        const updatedSewa = await prisma.sewa.update({
+          where: { id },
+          data: {
+            tgl_kembali: tglKembaliBaru,
+            durasi_sewa: sewa.durasi_sewa + extendedHours,
+            total_harga: sewa.total_harga + biayaPerpanjangan,
+            extended_hours: (sewa.extended_hours || 0) + extendedHours,
+            is_overdue: false, // Reset status overdue karena sudah diperpanjang
+            overdue_hours: 0,
+          },
+          include: {
+            motor: true,
+            penyewa: true,
+            admin: { select: { id: true, nama_lengkap: true } },
+          },
+        });
+
+        console.log('✅ Sewa diperpanjang successfully');
+        return {
+          sewa: updatedSewa,
+          extended_hours: extendedHours,
+          biaya_perpanjangan: biayaPerpanjangan,
+        };
+      } catch (error) {
+        console.error(`Error in perpanjang sewa ID ${id}:`, error);
+        if (
+          error instanceof BadRequestException ||
+          error instanceof NotFoundException
+        ) {
+          throw error;
+        }
+        throw new BadRequestException('Gagal memperpanjang sewa');
+      }
+    });
+  }
+
+  // ✅✅✅ PERBAIKAN UTAMA: SELESAI dengan menggunakan OverdueService untuk perhitungan denda
   async selesai(id: number, selesaiSewaDto: SelesaiSewaDto) {
     return this.prisma.$transaction(async (prisma) => {
       try {
@@ -439,44 +554,38 @@ export class SewaService {
           selesaiSewaDto.tgl_selesai,
           'Tanggal selesai',
         );
-        const sekarang = new Date();
 
-        if (tglSelesaiDate > sekarang) {
-          throw new BadRequestException(
-            'Tanggal selesai tidak boleh di masa depan',
+        // 3. ✅ PERBAIKAN: Gunakan OverdueService untuk perhitungan denda
+        const dendaCalculation =
+          await this.overdueService.calculateDendaForSelesai(
+            id,
+            tglSelesaiDate,
           );
-        }
 
-        // 3. Hitung denda & keterlambatan
-        let denda = 0;
-        let statusSelesai = 'Tepat Waktu';
-        let keterlambatanMenit = 0;
+        console.log(`🔍 DATA SEWA SEBELUM SELESAI:`, {
+          status: sewa.status,
+          is_overdue: sewa.is_overdue,
+          overdue_hours: sewa.overdue_hours,
+          total_harga: sewa.total_harga,
+          durasi_sewa: sewa.durasi_sewa,
+          satuan_durasi: sewa.satuan_durasi,
+          tgl_kembali: sewa.tgl_kembali,
+          tgl_sewa: sewa.tgl_sewa,
+        });
 
-        if (tglSelesaiDate > sewa.tgl_kembali) {
-          statusSelesai = 'Terlambat';
-          const diffMinutes = Math.ceil(
-            (tglSelesaiDate.getTime() - sewa.tgl_kembali.getTime()) /
-              (1000 * 60),
-          );
-          keterlambatanMenit = diffMinutes;
-
-          const hargaPerJam = Math.ceil(sewa.motor.harga / 24);
-          denda = Math.ceil((diffMinutes / 60) * hargaPerJam * 0.5);
-        }
-
-        // 4. ✅ SIMPAN DATA LENGKAP KE HISTORIES (sebelum hapus sewa)
+        // 4. ✅ SIMPAN DATA LENGKAP KE HISTORIES
         const history = await prisma.history.create({
           data: {
             // Data completion
             sewa_id: id,
             tgl_selesai: tglSelesaiDate,
-            status_selesai: statusSelesai,
+            status_selesai: dendaCalculation.statusSelesai,
             harga: sewa.total_harga,
-            denda: denda,
+            denda: dendaCalculation.denda,
             catatan: selesaiSewaDto.catatan || null,
-            keterlambatan_menit: keterlambatanMenit,
+            keterlambatan_menit: dendaCalculation.keterlambatanMenit,
 
-            // ✅ DATA SEWA LENGKAP (karena sewa akan dihapus)
+            // Data sewa lengkap
             motor_plat: sewa.motor.plat_nomor,
             motor_merk: sewa.motor.merk,
             motor_model: sewa.motor.model,
@@ -495,7 +604,7 @@ export class SewaService {
           },
         });
 
-        // 5. ✅ HAPUS DATA DARI TABLE SEWAS (setelah backup ke histories)
+        // 5. ✅ HAPUS DATA DARI TABLE SEWAS
         await prisma.sewa.delete({
           where: { id },
         });
@@ -506,11 +615,22 @@ export class SewaService {
           data: { status: 'tersedia' },
         });
 
-        console.log('✅✅✅ Sewa completed and moved to history successfully');
+        console.log('✅✅✅ Sewa completed dengan perhitungan denda benar:', {
+          status_sebelum: sewa.status,
+          status_sesudah: dendaCalculation.statusSelesai,
+          total_harga_sewa: sewa.total_harga,
+          keterlambatan_menit: dendaCalculation.keterlambatanMenit,
+          denda: dendaCalculation.denda,
+        });
 
         return {
-          message: 'Sewa berhasil diselesaikan dan dipindah ke histories',
+          message: 'Sewa berhasil diselesaikan',
           history: history,
+          denda: dendaCalculation.denda,
+          keterlambatan_menit: dendaCalculation.keterlambatanMenit,
+          keterlambatan_jam: dendaCalculation.keterlambatanJam,
+          status_sebelum: sewa.status,
+          status_selesai: dendaCalculation.statusSelesai,
         };
       } catch (error) {
         console.error(`❌ Error in selesai sewa ID ${id}:`, error);
@@ -591,17 +711,30 @@ export class SewaService {
   // ✅ FIND ACTIVE ONLY - Simplified dengan type safety
   async findActive() {
     try {
-      return await this.prisma.sewa.findMany({
+      const activeSewas = await this.prisma.sewa.findMany({
         where: { status: 'aktif' },
         include: {
           motor: {
-            select: { id: true, plat_nomor: true, merk: true, model: true },
+            select: {
+              id: true,
+              plat_nomor: true,
+              merk: true,
+              model: true,
+              harga: true,
+            },
           },
           penyewa: { select: { id: true, nama: true, no_whatsapp: true } },
           admin: { select: { id: true, nama_lengkap: true } },
         },
         orderBy: { created_at: 'desc' },
       });
+
+      // ✅ Update overdue status untuk semua sewa aktif menggunakan OverdueService
+      for (const sewa of activeSewas) {
+        await this.overdueService.updateOverdueStatus(sewa.id);
+      }
+
+      return activeSewas;
     } catch (error) {
       console.error('Error in findActive:', error);
       throw new InternalServerErrorException('Gagal mengambil data sewa aktif');
@@ -611,25 +744,58 @@ export class SewaService {
   // ✅ NEW METHOD: Cari sewa yang sudah jatuh tempo tapi belum selesai
   async findOverdue() {
     try {
-      const sekarang = new Date();
-      return await this.prisma.sewa.findMany({
-        where: {
-          status: 'aktif',
-          tgl_kembali: { lt: sekarang }, // Tanggal kembali sudah lewat
-        },
-        include: {
-          motor: {
-            select: { id: true, plat_nomor: true, merk: true, model: true },
-          },
-          penyewa: { select: { id: true, nama: true, no_whatsapp: true } },
-          admin: { select: { id: true, nama_lengkap: true } },
-        },
-        orderBy: { tgl_kembali: 'asc' },
-      });
+      // Gunakan method dari OverdueService yang sudah lebih lengkap
+      const overdueSewas = await this.overdueService.findOverdueSewas();
+      return overdueSewas;
     } catch (error) {
       console.error('Error in findOverdue:', error);
       throw new InternalServerErrorException(
         'Gagal mengambil data sewa overdue',
+      );
+    }
+  }
+
+  // ✅ METHOD: Get sewa statistics
+  async getStats() {
+    try {
+      const [active, overdue, allSewas] = await Promise.all([
+        this.findActive(),
+        this.findOverdue(),
+        this.findAll(),
+      ]);
+
+      return {
+        total: allSewas.length,
+        active: active.length,
+        overdue: overdue.length,
+        completed: allSewas.filter((s) => s.status === 'selesai').length,
+      };
+    } catch (error) {
+      console.error('Error in getStats:', error);
+      throw new InternalServerErrorException('Gagal mengambil statistik sewa');
+    }
+  }
+
+  // ✅ NEW METHOD: Get overdue statistics dari OverdueService
+  async getOverdueStats() {
+    try {
+      return await this.overdueService.getOverdueStats();
+    } catch (error) {
+      console.error('Error in getOverdueStats:', error);
+      throw new InternalServerErrorException(
+        'Gagal mengambil statistik overdue',
+      );
+    }
+  }
+
+  // ✅ NEW METHOD: Update semua status overdue
+  async updateAllOverdueStatus() {
+    try {
+      return await this.overdueService.updateAllActiveSewasOverdueStatus();
+    } catch (error) {
+      console.error('Error in updateAllOverdueStatus:', error);
+      throw new InternalServerErrorException(
+        'Gagal memperbarui status overdue',
       );
     }
   }
